@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import math
 import random
+from typing import NamedTuple
 
 import numpy as np
+from scipy.spatial import cKDTree
 
 from app.geometry.mesh import MESH_KINDS, fit_volume, mesh_candidates
 from app.geometry.svg import Sample, sample_svg_even, sample_text_even
@@ -51,7 +53,7 @@ def fit_points(
     height: float,
     depth: float,
     z0: float,
-) -> list[tuple[tuple[float, float, float], tuple[float, float, float], float]]:
+) -> list["Fitted"]:
     xs = np.array([s.x for s in samples])
     ys = np.array([s.y for s in samples])
     bw = max(float(xs.max() - xs.min()), 1e-4)
@@ -65,14 +67,23 @@ def fit_points(
         x = (s.x - cx) * scale
         z = -(s.y - cy) * scale + z0
         y = 0.0 if slab <= 1e-6 else (x / max(width, 1e-4)) * slab * 0.15
-        out.append(((x, y, z), s.color, s.importance))
+        out.append(
+            Fitted(
+                (x, y, z),
+                s.color,
+                weight=s.importance,
+                importance=s.feature.importance,
+                featureId=s.feature.id,
+                featureType=s.feature.type,
+            )
+        )
     return out
 
 
 def relax_planar(
-    fitted: list[tuple[tuple[float, float, float], tuple[float, float, float], float]],
+    fitted: list["Fitted"],
     iterations: int = 6,
-) -> list[tuple[tuple[float, float, float], tuple[float, float, float], float]]:
+) -> list["Fitted"]:
     n = len(fitted)
     if n < 3:
         return fitted
@@ -105,13 +116,31 @@ def relax_planar(
             force[j] -= push
         pts = 0.72 * (pts + force) + 0.28 * home
 
-    out = []
-    for i, (_, color, imp) in enumerate(fitted):
-        out.append(((float(pts[i, 0]), float(ys[i]), float(pts[i, 1])), color, imp))
-    return out
+    return [
+        item.moved((float(pts[i, 0]), float(ys[i]), float(pts[i, 1])))
+        for i, item in enumerate(fitted)
+    ]
 
 
-Fitted = tuple[tuple[float, float, float], tuple[float, float, float], float]
+class Fitted(NamedTuple):
+    """One placed drone slot, carrying the authored feature it came from.
+
+    `weight` is how much geometry detail sits here and drives which candidate
+    points survive packing. `importance` is what the artwork says the point
+    is worth to the audience and drives which drones an effect may borrow.
+    The two are unrelated: a tight curve on an interior fill line is
+    geometrically interesting and visually expendable.
+    """
+
+    position: tuple[float, float, float]
+    color: tuple[float, float, float]
+    weight: float
+    importance: float = 0.6
+    featureId: str = ""
+    featureType: str = "silhouette"
+
+    def moved(self, position: tuple[float, float, float]) -> "Fitted":
+        return self._replace(position=position)
 
 
 def default_min_sep() -> float:
@@ -166,7 +195,12 @@ def place_overflow(
     occupied = [np.asarray(p[0], dtype=np.float64) for p in kept]
     out: list[Fitted] = []
 
-    def accept(pos: tuple[float, float, float], color: tuple[float, float, float], imp: float) -> None:
+    def accept(
+        pos: tuple[float, float, float],
+        color: tuple[float, float, float],
+        imp: float,
+        feature: str,
+    ) -> None:
         p = np.asarray(pos, dtype=np.float64)
         p[2] = max(float(p[2]), floor_z)
         for _ in range(16):
@@ -176,11 +210,19 @@ def place_overflow(
             p[0] += float(rng.uniform(-min_sep * 0.25, min_sep * 0.25))
             p[2] = max(floor_z, float(p[2]) + float(rng.uniform(0.0, min_sep * 0.12)))
         occupied.append(p.copy())
-        out.append(((float(p[0]), float(p[1]), float(p[2])), color, imp))
+        out.append(
+            Fitted(
+                (float(p[0]), float(p[1]), float(p[2])),
+                color,
+                weight=1.0,
+                importance=imp,
+                featureType=feature,
+            )
+        )
 
     for i in range(n_orbit):
         a = (2 * math.pi * i / max(n_orbit, 1)) + 0.18
-        accept((c[0] + r * math.cos(a), y_back, cz + rz * math.sin(a)), (0.72, 0.84, 1.0), 0.45)
+        accept((c[0] + r * math.cos(a), y_back, cz + rz * math.sin(a)), (0.72, 0.84, 1.0), 0.45, "halo")
     spark_r = max(float(span[0]) * 0.55, min_sep * 3)
     for i in range(n_spark):
         u = (i + 0.5) / max(n_spark, 1)
@@ -191,6 +233,7 @@ def place_overflow(
             (c[0] + rad * math.cos(ang), y_back - min_sep * (0.45 + (i % 5) * 0.22), z),
             (1.0, 0.92, 0.68),
             0.28,
+            "spark",
         )
     return out
 
@@ -198,9 +241,38 @@ def place_overflow(
 def lift_above_floor(fitted: list[Fitted], floor_z: float = ART_FLOOR_Z) -> list[Fitted]:
     if not fitted:
         return fitted
-    lo = min(p[0][2] for p in fitted)
+    lo = min(p.position[2] for p in fitted)
     dz = 0.0 if lo >= floor_z else floor_z - lo
-    return [((x, y, z + dz), col, imp) for (x, y, z), col, imp in fitted]
+    if dz <= 0.0:
+        return fitted
+    return [p.moved((p.position[0], p.position[1], p.position[2] + dz)) for p in fitted]
+
+
+def fit_between(
+    fitted: list[Fitted], floor_z: float, ceiling_z: float | None
+) -> tuple[list[Fitted], float]:
+    """Slide the formation into the cleared airspace without reshaping it.
+
+    Translation is the only move available here: it preserves every pairwise
+    distance, so a formation that was packed to a safe spacing is still packed
+    to a safe spacing afterwards. Squashing it to fit would not be, which is
+    why a shape genuinely taller than the clearance is reported rather than
+    quietly shrunk into a violation.
+    """
+    fitted = lift_above_floor(fitted, floor_z)
+    if not fitted or ceiling_z is None:
+        return fitted, 0.0
+    hi = max(p.position[2] for p in fitted)
+    if hi <= ceiling_z:
+        return fitted, 0.0
+    lo = min(p.position[2] for p in fitted)
+    drop = min(hi - ceiling_z, max(lo - floor_z, 0.0))
+    if drop > 1e-9:
+        fitted = [
+            p.moved((p.position[0], p.position[1], p.position[2] - drop)) for p in fitted
+        ]
+        hi -= drop
+    return fitted, round(max(hi - ceiling_z, 0.0), 4)
 
 
 SAMPLER_VERSION = 4
@@ -214,6 +286,29 @@ def _span_m(pts: np.ndarray) -> float:
 
 def _max_span(n: int, min_sep: float) -> float:
     return max(MAX_SPAN_M, float(n) * min_sep * 0.85)
+
+
+def _envelope_scale(pts: np.ndarray, floor_z: float, ceiling_z: float | None) -> float:
+    """The most the cleared airspace will let the figure grow.
+
+    Growth happens about the centroid, so the vertical extent scales with it,
+    and `fit_between` can only slide the result — never squash it. Without this
+    cap the packer will happily grow a figure to seat every drone at legal
+    spacing and hand back something taller than the airspace: on a 1000-drone
+    dragon it produced a 240 m shape under a 150 m clearance, and the compiler
+    then flew 24 aircraft above the ceiling to reach it.
+
+    Refusing the growth instead sends the drones it cannot seat down the
+    overflow path, which places them in a halo at legal spacing. A saturated
+    figure with a visible halo is a design problem the operator can see and
+    fix; an airspace breach is neither.
+    """
+    if ceiling_z is None or len(pts) < 2:
+        return MAX_SCALE
+    span = float(pts[:, 2].max() - pts[:, 2].min())
+    if span <= 1e-6:
+        return MAX_SCALE
+    return max(1.0, (ceiling_z - floor_z) / span)
 
 
 def select_separated(pts: np.ndarray, weights: np.ndarray, n: int, min_sep: float, require_n: bool = True) -> np.ndarray | None:
@@ -261,43 +356,158 @@ def _min_pair(pts: np.ndarray) -> float:
     return float(np.sqrt(d2.min()))
 
 
-def pack_scaled(
+def _robust_spacing(pts: np.ndarray, percentile: float = 2.0) -> float:
+    """Typical neighbour distance, ignoring a few pathological pairs.
+
+    Scaling the whole artwork by the single worst pair inflates a 500-drone
+    show to kilometres. A low percentile keeps the show compact and leaves the
+    handful of violators to the relaxation pass.
+    """
+    if len(pts) < 2:
+        return float("inf")
+    if len(pts) <= 12:
+        return _min_pair(pts)
+    d, _ = cKDTree(pts).query(pts, k=2)
+    return float(np.percentile(d[:, 1], percentile))
+
+
+def relax_separation(
     pts: np.ndarray,
-    colors: list[tuple[float, float, float]],
+    min_sep: float,
+    iterations: int = 24,
+    max_drift: float | None = None,
+) -> np.ndarray:
+    """Push crowded points apart in place instead of inflating the artwork.
+
+    Drawings put their points on strokes, so a 500-drone silhouette can sit in
+    a box with twice the area it needs and still violate spacing everywhere,
+    because all the room is in the interior and all the points are on the
+    outline. Scaling the whole figure to fix that makes a show that is mostly
+    empty air and, on this demo, too tall for the cleared airspace.
+
+    `max_drift` leashes each point to where the artwork put it, so crowded
+    strokes thicken into bands using the space beside them while the silhouette
+    stays where it was drawn.
+    """
+    out = pts.astype(np.float64).copy()
+    anchors = out.copy()
+    target = min_sep * 1.02
+    for _ in range(iterations):
+        pairs = cKDTree(out).query_pairs(target, output_type="ndarray")
+        if len(pairs) == 0:
+            break
+        a, b = pairs[:, 0], pairs[:, 1]
+        delta = out[a] - out[b]
+        dist = np.maximum(np.linalg.norm(delta, axis=1), 1e-6)
+        push = (((target - dist) / dist) * 0.5)[:, None] * delta
+        shift = np.zeros_like(out)
+        np.add.at(shift, a, push)
+        np.add.at(shift, b, -push)
+        out += shift
+        if max_drift is not None:
+            off = out - anchors
+            far = np.linalg.norm(off, axis=1)
+            over = far > max_drift
+            if np.any(over):
+                out[over] = anchors[over] + off[over] * (max_drift / far[over])[:, None]
+    return out
+
+
+RELAX_PASSES = 160
+
+
+def _spread_scale(pts: np.ndarray, min_sep: float, max_scale: float) -> float:
+    """How much the artwork must grow once relaxation has used the space it has.
+
+    The naive answer, min_sep divided by the current neighbour distance,
+    assumes points can only move if the whole drawing moves. They can move
+    within it, so the figure only needs to grow by whatever the area itself
+    cannot supply: the deficit between the footprint the drone count requires
+    and the footprint the drawing already occupies.
+    """
+    if len(pts) < 2:
+        return 1.0
+    spacing = _robust_spacing(pts)
+    if spacing >= min_sep:
+        return 1.0
+    lo = pts.min(axis=0)
+    hi = pts.max(axis=0)
+    extent = np.sort(hi - lo)[-2:]  # the two axes the artwork actually uses
+    available = float(extent[0] * extent[1])
+    # Hexagonal packing is the densest arrangement of equal disks, so this is
+    # the smallest footprint the count can legally occupy.
+    required = len(pts) * min_sep * min_sep * 0.866
+    by_area = math.sqrt(required / available) if available > 1e-6 else max_scale
+    by_spacing = min_sep / max(spacing, 1e-9)
+    return float(min(max_scale, max(1.0, min(by_spacing, by_area))))
+
+
+def place_all(
+    pts: np.ndarray, min_sep: float, max_scale: float, rounds: int = 20
+) -> tuple[np.ndarray, float, bool]:
+    """Seat every point at legal spacing, growing the figure only as needed.
+
+    Relaxation alone cannot fix artwork whose strokes converge — a dozen loft
+    rows meeting at a shoulder have no free space between them at any leash
+    length. The alternative the packer used to reach for was discarding the
+    points it could not seat, which on this dragon meant throwing away 337 of
+    500 drones and scattering them in a halo. Growing the drawing 8% at a time
+    keeps every drone on the artwork, and the caller can still refuse a result
+    that no longer fits the venue.
+    """
+    centroid = pts.mean(axis=0)
+    scale = _spread_scale(pts, min_sep, max_scale)
+    for _ in range(rounds):
+        q = (pts - centroid) * scale + centroid
+        if _min_pair(q) < min_sep * 0.999:
+            q = relax_separation(q, min_sep, iterations=RELAX_PASSES, max_drift=min_sep * 2.0)
+        if _min_pair(q) >= min_sep * 0.999:
+            return q, scale, True
+        if scale >= max_scale - 1e-9:
+            break
+        # Small steps: every percent of growth is metres of airspace and
+        # seconds of transit, and overshooting the smallest workable size is
+        # what pushed this show's dragon through the ceiling.
+        scale = min(max_scale, scale * 1.035)
+    return q, scale, False
+
+
+def pack_scaled(
+    candidates: list[Fitted],
     weights: np.ndarray,
     n: int,
     min_sep: float,
     author_span: float,
+    scale_ceiling: float = MAX_SCALE,
 ) -> tuple[list[Fitted], float, int]:
+    pts = np.array([c.position for c in candidates], dtype=np.float64)
     centroid = pts.mean(axis=0)
-    max_scale = min(MAX_SCALE, _max_span(n, min_sep) / max(author_span, 1.0))
+    max_scale = min(MAX_SCALE, scale_ceiling, _max_span(n, min_sep) / max(author_span, 1.0))
     tiny = max(author_span * 0.002, 1e-4)
     picked = select_separated(pts, weights, n, tiny, require_n=False)
     if picked is None:
         return [], 1.0, n
-    selected = pts[picked]
-    dmin = _min_pair(selected)
-    scale = 1.0 if dmin >= min_sep else min(max_scale, min_sep / max(dmin, 1e-9))
-    q = (pts - centroid) * scale + centroid
-    placed = q[picked]
-    if _min_pair(placed) < min_sep * 0.999:
+    placed, scale, seated = place_all(pts[picked], min_sep, max_scale)
+    if not seated:
+        q = (pts - centroid) * scale + centroid
         picked = select_separated(q, weights, n, min_sep, require_n=False)
         if picked is None:
             return [], scale, n
         placed = q[picked]
     kept = [
-        ((float(placed[i, 0]), float(placed[i, 1]), float(placed[i, 2])), colors[int(picked[i])], float(weights[int(picked[i])]))
+        candidates[int(picked[i])].moved(
+            (float(placed[i, 0]), float(placed[i, 1]), float(placed[i, 2]))
+        )
         for i in range(len(picked))
     ]
     return kept, scale, n - len(kept)
 
 
 def apply_capacity(fitted: list[Fitted], min_sep: float, seed: int, floor_z: float = ART_FLOOR_Z, count: int | None = None) -> list[Fitted]:
-    pts = np.array([p[0] for p in fitted], dtype=np.float64)
-    colors = [p[1] for p in fitted]
-    weights = np.array([p[2] for p in fitted], dtype=np.float64)
+    pts = np.array([p.position for p in fitted], dtype=np.float64)
+    weights = np.array([p.weight for p in fitted], dtype=np.float64)
     target = count if count is not None else len(fitted)
-    kept, _scale, missing = pack_scaled(pts, colors, weights, target, min_sep, _span_m(pts))
+    kept, _scale, missing = pack_scaled(fitted, weights, target, min_sep, _span_m(pts))
     extra = place_overflow(kept, missing, min_sep, seed, floor_z=floor_z) if missing else []
     return lift_above_floor(kept + extra, floor_z)
 
@@ -314,6 +524,7 @@ def generate_formation(
     color: tuple[float, float, float] | None = None,
     min_sep_m: float | None = None,
     ground_z: float = 0.0,
+    ceiling_z: float | None = None,
 ) -> Formation:
     prior = max(float(settings.packScale or 1.0), 1.0)
     width = settings.widthM / prior
@@ -324,40 +535,49 @@ def generate_formation(
     floor_z = ground_z + ART_FLOOR_Z
     if kind in MESH_KINDS:
         pts, weights, colors = mesh_candidates(kind, content, count, settings.mode, settings.seed)
-        fitted = fit_volume(pts, colors, width, height, depth, z0)
-        pts_f = np.array([p[0] for p in fitted], dtype=np.float64)
+        raw = fit_volume(pts, colors, width, height, depth, z0)
+        candidates = [
+            Fitted(pos, col, weight=w, importance=imp, featureType="volume")
+            for (pos, col, imp), w in zip(raw, weights, strict=False)
+        ]
+        pts_f = np.array([c.position for c in candidates], dtype=np.float64)
         author_span = max(width, height, depth, _span_m(pts_f))
-        packed, scale, missing = pack_scaled(pts_f, colors, weights, count, min_sep, author_span)
+        room = _envelope_scale(pts_f, floor_z, ceiling_z)
+        packed, scale, missing = pack_scaled(
+            candidates, weights, count, min_sep, author_span, room
+        )
     else:
         picked = sample_text_even(content, count) if kind == "text" else sample_svg_even(content, count)
         if len(picked) != count:
             rng = _rng(settings.seed, f"{asset_id}:{count}:{kind}")
             picked = farthest_point(picked, count, rng)
-        fitted = fit_points(picked, width, height, depth, z0=z0)
-        pts_f = np.array([p[0] for p in fitted], dtype=np.float64)
-        colors = [p[1] for p in fitted]
-        weights = np.full(len(fitted), 1.0)
+        candidates = fit_points(picked, width, height, depth, z0=z0)
+        pts_f = np.array([c.position for c in candidates], dtype=np.float64)
+        weights = np.array([c.weight for c in candidates], dtype=np.float64)
         author_span = max(width, height, _span_m(pts_f))
-        dmin = _min_pair(pts_f)
-        max_scale = min(MAX_SCALE, _max_span(count, min_sep) / max(author_span, 1.0))
-        scale = 1.0 if dmin >= min_sep else min(max_scale, min_sep / max(dmin, 1e-9))
-        centroid = pts_f.mean(axis=0)
-        q = (pts_f - centroid) * scale + centroid
-        if _min_pair(q) < min_sep * 0.999:
-            packed, scale, missing = pack_scaled(pts_f, colors, weights, count, min_sep, author_span)
+        room = _envelope_scale(pts_f, floor_z, ceiling_z)
+        max_scale = min(MAX_SCALE, room, _max_span(count, min_sep) / max(author_span, 1.0))
+        q, scale, seated = place_all(pts_f, min_sep, max_scale)
+        if not seated:
+            packed, scale, missing = pack_scaled(
+                candidates, weights, count, min_sep, author_span, room
+            )
         else:
-            packed = [((float(q[i, 0]), float(q[i, 1]), float(q[i, 2])), colors[i], 1.0) for i in range(len(q))]
+            packed = [
+                c.moved((float(q[i, 0]), float(q[i, 1]), float(q[i, 2])))
+                for i, c in enumerate(candidates)
+            ]
             missing = count - len(packed)
     extra = place_overflow(packed, missing, min_sep, settings.seed, floor_z=floor_z) if missing and packed else []
     if missing and not packed:
         extra = place_overflow(
-            [((0.0, 0.0, floor_z + 8.0), (1.0, 0.85, 0.7), 1.0)],
+            [Fitted((0.0, 0.0, floor_z + 8.0), (1.0, 0.85, 0.7), 1.0, 0.6, "", "fallback")],
             missing,
             min_sep,
             settings.seed,
             floor_z=floor_z,
         )
-    fitted = lift_above_floor(packed + extra, floor_z)
+    fitted, overshoot = fit_between(packed + extra, floor_z, ceiling_z)
     scaled = settings.model_copy(
         update={
             "widthM": width * scale,
@@ -365,17 +585,20 @@ def generate_formation(
             "depthM": depth * scale if depth > 1e-6 else depth,
             "samplerVersion": SAMPLER_VERSION,
             "packScale": scale,
+            "ceilingOvershootM": overshoot,
         }
     )
     points = [
         FormationPoint(
             id=i,
-            position=pos,
-            color=color if color is not None else col,
-            importance=imp,
+            position=p.position,
+            color=color if color is not None else p.color,
+            importance=min(1.0, max(0.0, p.importance)),
             sourceFeatureId=i,
+            featureId=p.featureId or None,
+            featureType=p.featureType or None,
         )
-        for i, (pos, col, imp) in enumerate(fitted)
+        for i, p in enumerate(fitted)
     ]
     return Formation(
         id=formation_id,

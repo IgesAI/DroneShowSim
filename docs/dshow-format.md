@@ -3,7 +3,7 @@
 A `.dshow` file is a ZIP archive, not an opaque binary.
 
 ```
-cobra-show.dshow
+dragon-show.dshow
   manifest.json
   project.json
   assets/
@@ -20,7 +20,7 @@ cobra-show.dshow
 {
   "format": "dshow",
   "version": "0.1.0",
-  "name": "Cobra Show",
+  "name": "Dragon Show",
   "coordinateSystem": "DSHOW_LOCAL_RH",
   "units": "SI",
   "droneCount": 250,

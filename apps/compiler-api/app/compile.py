@@ -18,10 +18,25 @@ from app.models import (
     required_separation,
 )
 from app.safety.validate import recommended_duration, validate_transition
-from app.transition.assign import assign_formations, swap_worst_crossings
+from app.transition.assign import (
+    MORPH_SEPARATION_BOUND,
+    assign_formations,
+    swap_worst_crossings,
+)
 
 
 LAUNCH_ID = "frm_launch"
+
+
+def morph_safe_spacing(project: ShowProject) -> float:
+    """Point spacing a formation needs so morphing into the next one is legal.
+
+    A synchronised morph under squared-distance assignment dips to
+    min(start, end) / sqrt(2) at its tightest. Packing formations at exactly
+    the required separation therefore guarantees a violation the moment they
+    move, so the margin belongs in the packer rather than in a repair pass.
+    """
+    return required_separation(project.droneProfile, project.safetyProfile) * MORPH_SEPARATION_BOUND
 
 
 def ensure_formations(project: ShowProject) -> tuple[ShowProject, set[str]]:
@@ -47,8 +62,9 @@ def ensure_formations(project: ShowProject) -> tuple[ShowProject, set[str]]:
             kind=asset.kind if asset.kind in {"svg", "text", "glb", "obj", "stl"} else "svg",
             count=count,
             settings=settings,
-            min_sep_m=required_separation(project.droneProfile, project.safetyProfile),
+            min_sep_m=morph_safe_spacing(project),
             ground_z=project.venue.groundZ,
+            ceiling_z=project.venue.groundZ + project.venue.maxAltitudeM,
         )
         rebuilt.add(formation.id)
     return project, rebuilt

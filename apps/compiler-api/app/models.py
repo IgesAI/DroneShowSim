@@ -4,6 +4,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.choreography.clock import ShowExecutionConfig
+from app.choreography.scene import Scene
+
 SCHEMA_VERSION = "0.2.0"
 COMPILER_VERSION = "0.3.0"
 COORDINATE_SYSTEM = "DSHOW_LOCAL_RH"
@@ -55,6 +58,11 @@ class VenueConfiguration(BaseModel):
     altitudeDatum: Literal["local-z", "agl", "msl", "ellipsoid", "terrain"] = "local-z"
     groundZ: float = 0.0
     showHeadingRad: float = 0.0
+    # Airspace the show is cleared for. This belongs to the site, not the
+    # aircraft, and the validator reads it from here so the ceiling a formation
+    # is built against is the same one it is later judged against.
+    maxAltitudeM: float = 150.0
+    radiusM: float = 400.0
     audience: AudienceCamera = Field(default_factory=AudienceCamera)
 
 
@@ -80,8 +88,12 @@ class FormationPoint(BaseModel):
     id: int
     position: Vec3
     color: Rgb = (1.0, 0.85, 0.7)
+    # Visual weight of this point. A dragon eye is not an interior fill point.
     importance: float = 1.0
     sourceFeatureId: int | None = None
+    featureId: str | None = None
+    featureType: str | None = None
+    featureMetadata: dict[str, float | int | str | bool] = Field(default_factory=dict)
 
 
 class FormationGenerationSettings(BaseModel):
@@ -92,6 +104,10 @@ class FormationGenerationSettings(BaseModel):
     seed: int = 1
     samplerVersion: int = 1
     packScale: float = 1.0
+    # How far the packed artwork still pokes through the cleared ceiling after
+    # being slid down as far as the floor allows. Non-zero means the shape is
+    # taller than the airspace and needs a smaller drone count or a waiver.
+    ceilingOvershootM: float = 0.0
 
 
 class Formation(BaseModel):
@@ -185,6 +201,10 @@ class ShowProject(BaseModel):
     assets: list[Asset] = Field(default_factory=list)
     formations: list[Formation] = Field(default_factory=list)
     timeline: Timeline = Field(default_factory=Timeline)
+    # Artistic intent. Times are assigned by the compiler, not authored here.
+    scenes: list[Scene] = Field(default_factory=list)
+    # How the show is started, kept out of the immutable choreography.
+    execution: ShowExecutionConfig = Field(default_factory=ShowExecutionConfig)
     safetyProfile: SafetyProfile = Field(default_factory=SafetyProfile)
     slots: list[ShowSlot] = Field(default_factory=list)
     compilerNotes: list[CompilerNote] = Field(default_factory=list)

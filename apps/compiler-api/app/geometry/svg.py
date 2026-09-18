@@ -8,12 +8,31 @@ from dataclasses import dataclass
 from svgpathtools import parse_path
 
 
+@dataclass(frozen=True)
+class Feature:
+    """Authored visual significance, inherited down the SVG tree.
+
+    Not every point on a silhouette matters equally, and only the artwork
+    knows which. An eye is worth keeping; interior fill is what an effect
+    should borrow from first.
+    """
+
+    id: str = ""
+    type: str = "silhouette"
+    importance: float = 0.6
+
+
+DEFAULT_FEATURE = Feature()
+
+
 @dataclass
 class Sample:
     x: float
     y: float
+    # Sampling weight: how much geometry detail sits here. Unbounded.
     importance: float
     color: tuple[float, float, float]
+    feature: Feature = DEFAULT_FEATURE
 
 
 NAMED = {
@@ -78,37 +97,54 @@ def _local_tag(tag: str) -> str:
     return tag.split("}")[-1].lower()
 
 
+def _elem_feature(el: ET.Element, inherited: Feature) -> Feature:
+    raw = el.attrib.get("data-importance")
+    importance = inherited.importance
+    if raw is not None:
+        try:
+            importance = min(1.0, max(0.0, float(raw)))
+        except ValueError:
+            pass
+    return Feature(
+        id=el.attrib.get("id") or inherited.id,
+        type=el.attrib.get("data-feature") or inherited.type,
+        importance=importance,
+    )
+
+
 def _element_paths(
     el: ET.Element,
     inherited: tuple[float, float, float] = FALLBACK,
-) -> list[tuple[str, tuple[float, float, float]]]:
+    feature: Feature = DEFAULT_FEATURE,
+) -> list[tuple[str, tuple[float, float, float], Feature]]:
     tag = _local_tag(el.tag)
     color = _elem_color(el, inherited)
-    out: list[tuple[str, tuple[float, float, float]]] = []
+    feature = _elem_feature(el, feature)
+    out: list[tuple[str, tuple[float, float, float], Feature]] = []
     if tag == "path" and el.attrib.get("d"):
-        out.append((el.attrib["d"], color))
+        out.append((el.attrib["d"], color, feature))
     elif tag == "circle":
         cx, cy, r = float(el.attrib.get("cx", 0)), float(el.attrib.get("cy", 0)), float(el.attrib.get("r", 0))
-        out.append((f"M {cx + r},{cy} A {r},{r} 0 1 1 {cx - r},{cy} A {r},{r} 0 1 1 {cx + r},{cy}", color))
+        out.append((f"M {cx + r},{cy} A {r},{r} 0 1 1 {cx - r},{cy} A {r},{r} 0 1 1 {cx + r},{cy}", color, feature))
     elif tag == "ellipse":
         cx, cy = float(el.attrib.get("cx", 0)), float(el.attrib.get("cy", 0))
         rx, ry = float(el.attrib.get("rx", 0)), float(el.attrib.get("ry", 0))
-        out.append((f"M {cx + rx},{cy} A {rx},{ry} 0 1 1 {cx - rx},{cy} A {rx},{ry} 0 1 1 {cx + rx},{cy}", color))
+        out.append((f"M {cx + rx},{cy} A {rx},{ry} 0 1 1 {cx - rx},{cy} A {rx},{ry} 0 1 1 {cx + rx},{cy}", color, feature))
     elif tag == "rect":
         x, y = float(el.attrib.get("x", 0)), float(el.attrib.get("y", 0))
         w, h = float(el.attrib.get("width", 0)), float(el.attrib.get("height", 0))
-        out.append((f"M {x},{y} H {x + w} V {y + h} H {x} Z", color))
+        out.append((f"M {x},{y} H {x + w} V {y + h} H {x} Z", color, feature))
     elif tag == "line":
         x1, y1 = float(el.attrib.get("x1", 0)), float(el.attrib.get("y1", 0))
         x2, y2 = float(el.attrib.get("x2", 0)), float(el.attrib.get("y2", 0))
-        out.append((f"M {x1},{y1} L {x2},{y2}", color))
+        out.append((f"M {x1},{y1} L {x2},{y2}", color, feature))
     elif tag in {"polygon", "polyline"}:
         pts = el.attrib.get("points", "").strip()
         if pts:
             close = " Z" if tag == "polygon" else ""
-            out.append((f"M {pts.replace(',', ' ')}{close}", color))
+            out.append((f"M {pts.replace(',', ' ')}{close}", color, feature))
     for child in list(el):
-        out.extend(_element_paths(child, color))
+        out.extend(_element_paths(child, color, feature))
     return out
 
 
@@ -118,6 +154,7 @@ class Stroke:
     color: tuple[float, float, float]
     # cumulative arc length, x, y
     knots: list[tuple[float, float, float]]
+    feature: Feature = DEFAULT_FEATURE
 
 
 def _interp_stroke(stroke: Stroke, s: float) -> Sample:
@@ -134,7 +171,13 @@ def _interp_stroke(stroke: Stroke, s: float) -> Sample:
     b = stroke.knots[i]
     span = max(b[0] - a[0], 1e-9)
     t = (target - a[0]) / span
-    return Sample(a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, 1.0, stroke.color)
+    return Sample(
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+        1.0,
+        stroke.color,
+        stroke.feature,
+    )
 
 
 def _allocate(lengths: list[float], n: int) -> list[int]:
@@ -171,7 +214,11 @@ def even_from_strokes(strokes: list[Stroke], count: int) -> list[Sample]:
     return out[:count]
 
 
-def _path_stroke(d: str, color: tuple[float, float, float]) -> Stroke | None:
+def _path_stroke(
+    d: str,
+    color: tuple[float, float, float],
+    feature: Feature = DEFAULT_FEATURE,
+) -> Stroke | None:
     try:
         path = parse_path(d)
     except Exception:
@@ -187,13 +234,13 @@ def _path_stroke(d: str, color: tuple[float, float, float]) -> Stroke | None:
         prev = p
     if not math.isfinite(acc) or acc < 1e-4:
         return None
-    return Stroke(length=acc, color=color, knots=knots)
+    return Stroke(length=acc, color=color, knots=knots, feature=feature)
 
 
 def sample_svg(svg_text: str, candidate_count: int = 4000) -> list[Sample]:
     root = ET.fromstring(svg_text)
     samples: list[Sample] = []
-    for d, color in _element_paths(root):
+    for d, color, feature in _element_paths(root):
         try:
             path = parse_path(d)
         except Exception:
@@ -213,7 +260,15 @@ def sample_svg(svg_text: str, candidate_count: int = 4000) -> list[Sample]:
             except Exception:
                 curv = 0.0
             importance = 1.0 + step + min(curv, 20.0) * 0.15
-            samples.append(Sample(x=float(p.real), y=float(p.imag), importance=importance, color=color))
+            samples.append(
+                Sample(
+                    x=float(p.real),
+                    y=float(p.imag),
+                    importance=importance,
+                    color=color,
+                    feature=feature,
+                )
+            )
             prev = p
     if not samples:
         for i in range(candidate_count):
@@ -229,8 +284,8 @@ def sample_svg_even(svg_text: str, count: int) -> list[Sample]:
 def _svg_strokes(svg_text: str) -> list[Stroke]:
     root = ET.fromstring(svg_text)
     strokes: list[Stroke] = []
-    for d, color in _element_paths(root):
-        stroke = _path_stroke(d, color)
+    for d, color, feature in _element_paths(root):
+        stroke = _path_stroke(d, color, feature)
         if stroke:
             strokes.append(stroke)
     return strokes
@@ -241,8 +296,8 @@ def _stroke_endpoints(strokes: list[Stroke]) -> list[Sample]:
     for stroke in strokes:
         a = _interp_stroke(stroke, 0.0)
         b = _interp_stroke(stroke, stroke.length)
-        out.append(Sample(a.x, a.y, 1.4, a.color))
-        out.append(Sample(b.x, b.y, 1.4, b.color))
+        out.append(Sample(a.x, a.y, 1.4, a.color, stroke.feature))
+        out.append(Sample(b.x, b.y, 1.4, b.color, stroke.feature))
     return out
 
 
@@ -273,10 +328,13 @@ TEXT_STROKES: dict[str, list[tuple[float, float, float, float]]] = {
 }
 
 
+PLACEHOLDER_TEXT = "SHOW"
+
+
 def sample_text(text: str, candidate_count: int = 3000) -> list[Sample]:
     letters = [ch for ch in text.upper() if ch in TEXT_STROKES or ch == " "]
     if not letters:
-        letters = list("COBRA")
+        letters = list(PLACEHOLDER_TEXT)
     samples: list[Sample] = []
     cursor = 0.0
     for ch in letters:
@@ -297,7 +355,7 @@ def sample_text(text: str, candidate_count: int = 3000) -> list[Sample]:
 def _text_strokes(text: str) -> list[Stroke]:
     letters = [ch for ch in text.upper() if ch in TEXT_STROKES or ch == " "]
     if not letters:
-        letters = list("COBRA")
+        letters = list(PLACEHOLDER_TEXT)
     strokes: list[Stroke] = []
     cursor = 0.0
     for ch in letters:

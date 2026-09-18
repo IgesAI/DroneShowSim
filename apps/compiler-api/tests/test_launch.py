@@ -1,7 +1,7 @@
 import numpy as np
 
 from app.compile import solve_timeline
-from app.demo import cobra_project
+from app.demo import dragon_project
 from app.formation.launch import generate_launch_grid
 from app.safety.geometry import segment_distance
 
@@ -25,7 +25,7 @@ def test_launch_grid_count_and_pitch():
 
 
 def test_demo_starts_on_ground_and_lands():
-    project = solve_timeline(cobra_project(count=20, seed=1))
+    project = solve_timeline(dragon_project(count=20, seed=1))
     assert project.timeline.cues[0].phase == "takeoff"
     assert project.timeline.cues[-1].phase == "landing"
     launch = next(f for f in project.formations if f.role == "launch")

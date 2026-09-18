@@ -11,7 +11,7 @@ Canonical model: **DSHOW_LOCAL_RH** (`+X` right, `+Y` toward audience, `+Z` up).
 ## What v0.1 proves
 
 1. Create a project and set drone count (10–500)
-2. Import SVG (or load the Cobra demo)
+2. Import SVG (or load the Dragon demo)
 3. Compiler emits **exactly N** points per formation
 4. Hungarian assignment + min-jerk trajectories
 5. Safety report (separation, velocity, acceleration)

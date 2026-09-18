@@ -258,6 +258,152 @@ export type CompiledTransition = {
   safety: SafetyReport
 }
 
+/**
+ * Temporal choreography. Motion, appearance and role are three independent
+ * functions of show time: a drone at brightness 0 is still flying.
+ */
+
+export type RoleType = 'FORMATION' | 'EFFECT' | 'STAGING' | 'RESERVE' | 'TAKEOFF' | 'RTH'
+export type MotionStyle = 'hold' | 'minjerk' | 'linear' | 'spline'
+export type Interpolation = 'step' | 'linear'
+
+export type TrajectorySegment = {
+  startTime: number
+  duration: number
+  start: Vec3
+  end: Vec3
+  style: MotionStyle
+  floorZ: number
+  sourceId: string
+  /** Interior knots for `spline`; empty for every other style. */
+  waypoints: Vec3[]
+}
+
+export type TrajectoryTrack = {
+  segments: TrajectorySegment[]
+}
+
+export type LightingKeyframe = {
+  time: number
+  rgbLinear: Rgb
+  brightness: number
+  interpolation: Interpolation
+}
+
+export type LightingTrack = {
+  keyframes: LightingKeyframe[]
+}
+
+export type RoleSegment = {
+  startTime: number
+  endTime: number
+  roleType: RoleType
+  roleId: string
+  metadata: Record<string, string | number | boolean>
+}
+
+export type RoleTrack = {
+  segments: RoleSegment[]
+}
+
+export type DroneProgram = {
+  droneId: number
+  trajectoryTrack: TrajectoryTrack
+  lightingTrack: LightingTrack
+  roleTrack: RoleTrack
+}
+
+export type SceneDiagnostic = {
+  sceneId: string
+  name: string
+  kind: string
+  startTime: number
+  duration: number
+  formationId: string
+  droneCount: number
+  effectIds: string[]
+}
+
+export type EffectAllocation = {
+  effectId: string
+  requestedDroneCount: number
+  allocatedDroneCount: number
+  formationImpactEstimate: number
+  removedImportance: number
+  satisfied: boolean
+  shortfallReason: string
+}
+
+export type StagingPlan = {
+  label: string
+  droneCount: number
+  stagingBeginsAt: number
+  eventBeginsAt: number
+  darkTravelDuration: number
+  minimumPredictedSeparation: number
+  requiredSeparation: number
+  rejected: boolean
+  notes: string[]
+}
+
+export type EffectDiagnostic = {
+  effectId: string
+  effectName: string
+  effectType: string
+  anchor: Vec3
+  effectBeginsAt: number
+  effectEndsAt: number
+  darkTravelDuration: number
+  allocation: EffectAllocation
+  staging: StagingPlan | null
+  rejoin: StagingPlan | null
+}
+
+export type ChoreographyDiagnostics = {
+  seed: number
+  algorithmVersion: number
+  lookaheadHorizon: number
+  scenes: SceneDiagnostic[]
+  effects: EffectDiagnostic[]
+  notes: string[]
+  assignment?: unknown[]
+  conflictsBefore?: unknown
+  conflictsAfter?: unknown
+  repairs?: unknown
+}
+
+/** Counts only; the full measurement rollup stays server-side. */
+export type ChoreographySafetySummary = {
+  passed: boolean
+  droneCount: number
+  darkDroneCount: number
+  validatedDroneCount: number
+}
+
+export type CompiledProgramMeta = {
+  logicalDroneId: number
+  contentHash: string
+  duration: number
+  seed: number
+  algorithmVersion: number
+}
+
+export type Choreography = {
+  version: string
+  compilerVersion: string
+  algorithmVersion: number
+  seed: number
+  duration: number
+  programs: DroneProgram[]
+  diagnostics: ChoreographyDiagnostics
+  safety?: ChoreographySafetySummary
+  compiledPrograms?: CompiledProgramMeta[]
+  scenes?: unknown[]
+  audience?: unknown
+  stagingVolumes?: unknown[]
+  execution?: unknown
+}
+
 export const defaultAudience = (): AudienceCamera => ({
   position: [0, 90, 1.7],
   lookAt: [0, 0, 28],

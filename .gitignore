@@ -12,6 +12,7 @@ dist
 dist-ssr
 .next
 *.local
+*.tsbuildinfo
 __pycache__
 .pytest_cache
 .venv

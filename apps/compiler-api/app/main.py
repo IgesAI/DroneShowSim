@@ -4,8 +4,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
+from app.choreography.audience import AudienceView
+from app.choreography.pipeline import Choreography, ChoreographyOptions, compile_choreography
+from app.choreography.validate import Geofence
 from app.compile import ensure_formations, solve_timeline
-from app.demo import cobra_project
+from app.demo import dragon_project
 from app.exporters.dshow_zip import export_dshow
 from app.exporters.generic_csv import export_generic_csv
 from app.exporters.skybrush_csv import export_skybrush_csv
@@ -101,20 +104,61 @@ def transitions_solve(req: SolveTransitionRequest):
     }
 
 
+def choreography_options(project: ShowProject, seed: int, lookahead: int) -> ChoreographyOptions:
+    audience = project.venue.audience
+    return ChoreographyOptions(
+        seed=seed,
+        assignmentLookaheadScenes=lookahead,
+        audience=AudienceView(
+            position=audience.position, lookAt=audience.lookAt, fovDeg=audience.fovDeg
+        ),
+        geofence=Geofence(
+            groundZ=project.venue.groundZ,
+            maxAltitudeM=project.venue.groundZ + project.venue.maxAltitudeM,
+            radiusM=project.venue.radiusM,
+        ),
+    )
+
+
+def choreography_payload(choreography: Choreography) -> dict:
+    """Programs travel to the client; the onboard payload stays server-side."""
+    data = choreography.model_dump(exclude={"compiled"})
+    data["compiledPrograms"] = [
+        {
+            "logicalDroneId": c.logicalDroneId,
+            "contentHash": c.contentHash,
+            "duration": c.duration,
+            "seed": c.seed,
+            "algorithmVersion": c.algorithmVersion,
+        }
+        for c in choreography.compiled
+    ]
+    return data
+
+
 @app.post("/shows/compile")
-def shows_compile(req: CompileShowRequest):
+def shows_compile(req: CompileShowRequest, choreography: bool = True, lookahead: int = 1, seed: int = 1):
     project = solve_timeline(req.project, mode=req.mode)
-    return {
+    payload = {
         "project": project.model_dump(),
         "safety": [],
         "violations": [v.model_dump() for v in project.proximityViolations],
         "notes": [n.model_dump() for n in project.compilerNotes],
     }
+    if choreography and project.scenes:
+        compiled = compile_choreography(project, choreography_options(project, seed, lookahead))
+        payload["choreography"] = choreography_payload(compiled)
+    return payload
 
 
 @app.post("/shows/demo")
-def shows_demo(count: int = 250, seed: int = 1):
-    return shows_compile(CompileShowRequest(project=cobra_project(count=count, seed=seed), mode="preview"))
+def shows_demo(count: int = 500, seed: int = 1, lookahead: int = 1):
+    return shows_compile(
+        CompileShowRequest(project=dragon_project(count=count, seed=seed), mode="preview"),
+        choreography=True,
+        lookahead=lookahead,
+        seed=seed,
+    )
 
 
 @app.post("/exports/csv")

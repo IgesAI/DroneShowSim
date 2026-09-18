@@ -121,3 +121,31 @@ def segment_distances(
     p = a0 + s[:, None] * a
     q = b0 + t[:, None] * b
     return np.linalg.norm(p - q, axis=1), s
+
+
+def swept_distances(
+    a0: np.ndarray,
+    a1: np.ndarray,
+    b0: np.ndarray,
+    b1: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Closest approach of two aircraft moving simultaneously over one frame.
+
+    This is not the distance between their paths. `segment_distances` lets one
+    drone sit at the start of its segment while the other is at the end, so two
+    aircraft that fly the same corridor a minute apart register as nearly
+    touching. Separation is a question about a shared instant, so both endpoints
+    advance together: the gap is |w0 + u*dw| for one u, minimised in closed form.
+    """
+    if len(a0) == 0:
+        z = np.zeros(0, dtype=np.float64)
+        return z, z
+    w0 = a0 - b0
+    dw = (a1 - b1) - w0
+    denom = np.einsum("ij,ij->i", dw, dw)
+    u = np.zeros(len(a0), dtype=np.float64)
+    moving = denom > EPS
+    u[moving] = np.clip(
+        -np.einsum("ij,ij->i", w0[moving], dw[moving]) / denom[moving], 0.0, 1.0
+    )
+    return np.linalg.norm(w0 + u[:, None] * dw, axis=1), u

@@ -11,14 +11,19 @@ import {
   defaultSafetyProfile,
   type AnimationClip,
   type AnimationMotion,
+  type Choreography,
   type ShowProject,
   type Transition,
   type TransitionType,
   type Violation,
 } from '@lumina/schema'
 import { create } from 'zustand'
-import { compileDemo, compileShow, generateFormation } from './api'
+import { compileDemo, compileShow, generateFormation, validateShow } from './api'
 import { isMesh, type ImportKind } from './assets'
+
+export type CameraPreset = 'persp' | 'top' | 'front' | 'side' | 'audience'
+/** `show` draws what the audience sees; `engineering` draws every physical drone. */
+export type ViewMode = 'show' | 'engineering'
 
 export function emptyShow(count = 80): ShowProject {
   return {
@@ -84,6 +89,7 @@ function rebuildTransitions(project: ShowProject, cues: ShowProject['timeline'][
 
 type EditorState = {
   project: ShowProject | null
+  choreography: Choreography | null
   playhead: number
   playing: boolean
   loop: boolean
@@ -93,8 +99,34 @@ type EditorState = {
   violations: Violation[]
   showCapsules: boolean
   audienceView: boolean
+  dirty: boolean
+  past: ShowProject[]
+  future: ShowProject[]
+  cameraPreset: CameraPreset
+  showGrid: boolean
+  showBounds: boolean
+  showTrajectories: boolean
+  viewMode: ViewMode
+  selectedDrone: number | null
+  live: {
+    airborne: number
+    warnings: number
+    /** Physically present but below the visual threshold. */
+    dark: number
+    drone: { id: number; x: number; y: number; z: number; v: number; a: number; nn: number } | null
+  }
+  paletteOpen: boolean
   loadDemo: (count?: number) => Promise<void>
   recompile: () => Promise<void>
+  validate: () => Promise<void>
+  addText: (text: string) => Promise<void>
+  renameProject: (name: string) => void
+  undo: () => void
+  redo: () => void
+  setCameraPreset: (v: CameraPreset) => void
+  setShowGrid: (v: boolean) => void
+  setShowBounds: (v: boolean) => void
+  setPaletteOpen: (v: boolean) => void
   setPlayhead: (t: number) => void
   togglePlay: () => void
   play: () => void
@@ -118,14 +150,25 @@ type EditorState = {
   renameFormation: (id: string, name: string) => void
   patchPitch: (m: number, compile?: boolean) => Promise<void>
   setShowCapsules: (v: boolean) => void
+  setShowTrajectories: (v: boolean) => void
+  setViewMode: (v: ViewMode) => void
+  setSelectedDrone: (id: number | null) => void
+  setLive: (live: EditorState['live']) => void
   setAudienceView: (v: boolean) => void
   seekViolation: (v: Violation) => void
 }
 
 let compileGen = 0
 
+function remember(set: (p: Partial<EditorState>) => void, get: () => EditorState) {
+  const p = get().project
+  if (!p) return
+  set({ past: [...get().past.slice(-19), structuredClone(p)], future: [], dirty: true })
+}
+
 export const useEditor = create<EditorState>((set, get) => ({
   project: null,
+  choreography: null,
   playhead: 0,
   playing: false,
   loop: false,
@@ -135,14 +178,34 @@ export const useEditor = create<EditorState>((set, get) => ({
   violations: [],
   showCapsules: false,
   audienceView: false,
+  dirty: false,
+  past: [],
+  future: [],
+  cameraPreset: 'persp',
+  showGrid: true,
+  showBounds: false,
+  showTrajectories: false,
+  viewMode: 'show',
+  selectedDrone: null,
+  live: { airborne: 0, warnings: 0, dark: 0, drone: null },
+  paletteOpen: false,
 
   loadDemo: async (count = 80) => {
     const gen = ++compileGen
     set({ compiling: true, error: null, playing: false })
     try {
-      const { project, violations } = await compileDemo(count, 1)
+      const { project, violations, choreography } = await compileDemo(count, 1)
       if (gen !== compileGen) return
-      set({ project, violations: violations.length ? violations : project.proximityViolations ?? [], playhead: project.timeline.cues[0]?.startTime ?? 0, compiling: false })
+      set({
+        project,
+        choreography: choreography ?? null,
+        violations: violations.length ? violations : project.proximityViolations ?? [],
+        playhead: project.timeline.cues[0]?.startTime ?? 0,
+        compiling: false,
+        dirty: false,
+        past: [],
+        future: [],
+      })
     } catch (err) {
       if (gen !== compileGen) return
       set({ compiling: false, error: err instanceof Error ? err.message : 'Compile failed' })
@@ -155,10 +218,18 @@ export const useEditor = create<EditorState>((set, get) => ({
     const gen = ++compileGen
     set({ compiling: true, error: null })
     try {
-      const { project: next, violations } = await compileShow(project)
+      const { project: next, violations, choreography } = await compileShow(project)
       if (gen !== compileGen) return
       const playhead = Math.min(get().playhead, next.timeline.duration)
-      set({ project: next, violations, compiling: false, playhead, error: null })
+      set({
+        project: next,
+        choreography: choreography ?? null,
+        violations,
+        compiling: false,
+        playhead,
+        error: null,
+        dirty: false,
+      })
     } catch (err) {
       if (gen !== compileGen) return
       set({ compiling: false, error: err instanceof Error ? err.message : 'Compile failed' })
@@ -200,6 +271,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   patchCount: async (n) => {
     const { project } = get()
     if (!project) return
+    remember(set, get)
     const next = {
       ...project,
       droneProfile: { ...project.droneProfile, count: n },
@@ -207,8 +279,8 @@ export const useEditor = create<EditorState>((set, get) => ({
     }
     set({ project: next, compiling: true, error: null, playing: false })
     try {
-      const { project: compiled, violations } = await compileShow(next)
-      set({ project: compiled, violations, compiling: false, playhead: 0 })
+      const { project: compiled, violations, choreography } = await compileShow(next)
+      set({ project: compiled, choreography: choreography ?? null, violations, compiling: false, playhead: 0 })
     } catch (err) {
       set({ compiling: false, error: err instanceof Error ? err.message : 'Compile failed' })
     }
@@ -217,6 +289,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   importAsset: async (name, content, kind) => {
     const project = get().project ?? emptyShow()
     if (!get().project) set({ project })
+    remember(set, get)
     set({ compiling: true, error: null })
     const id = `asset_${Math.random().toString(36).slice(2, 8)}`
     const mesh = isMesh(kind)
@@ -264,6 +337,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   addAnimation: async (formationId, motion) => {
     const { project } = get()
     if (!project) return
+    remember(set, get)
     const meta = MOTION_META[motion]
     const clip: AnimationClip = {
       id: `anim_${Math.random().toString(36).slice(2, 8)}`,
@@ -294,6 +368,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   removeAsset: async (assetId) => {
     const { project } = get()
     if (!project) return
+    remember(set, get)
     const doomed = new Set(project.formations.filter((f) => f.sourceAssetId === assetId).map((f) => f.id))
     if (doomed.size >= project.formations.length) {
       set({ error: 'Keep at least one formation' })
@@ -319,6 +394,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   removeSelected: async () => {
     const { project, selectedId } = get()
     if (!project || !selectedId) return
+    remember(set, get)
     if (selectedId === 'frm_launch' || selectedId === 'cue_launch' || selectedId === 'cue_land') {
       set({ error: 'Launch/landing grid is owned by the compiler' })
       return
@@ -374,6 +450,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   reorderCue: async (formationId, toIndex) => {
     const { project } = get()
     if (!project) return
+    remember(set, get)
     if (formationId === 'frm_launch') return
     const cues = [...project.timeline.cues]
     const from = cues.findIndex((c) => c.formationId === formationId && c.phase === 'show')
@@ -400,6 +477,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   patchHold: async (formationId, hold, compile = true) => {
     const { project } = get()
     if (!project) return
+    if (compile) remember(set, get)
     const nextHold = Math.max(1, Math.min(40, hold))
     set({
       project: {
@@ -416,6 +494,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   patchAnimation: async (id, patch, compile = true) => {
     const { project } = get()
     if (!project) return
+    if (compile) remember(set, get)
     set({
       project: {
         ...project,
@@ -431,6 +510,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   patchTransition: async (id, patch, compile = true) => {
     const { project } = get()
     if (!project) return
+    if (compile) remember(set, get)
     set({
       project: {
         ...project,
@@ -456,6 +536,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   patchPitch: async (m, compile = true) => {
     const { project } = get()
     if (!project) return
+    if (compile) remember(set, get)
     const pitch = Math.max(2, Math.min(12, m))
     set({
       project: {
@@ -468,14 +549,75 @@ export const useEditor = create<EditorState>((set, get) => ({
     if (compile) await get().recompile()
   },
   setShowCapsules: (v) => set({ showCapsules: v }),
-  setAudienceView: (v) => set({ audienceView: v }),
+  setShowTrajectories: (v) => set({ showTrajectories: v }),
+  setViewMode: (v) => set({ viewMode: v }),
+  setSelectedDrone: (id) => set({ selectedDrone: id }),
+  setLive: (live) => set({ live }),
+  setAudienceView: (v) => {
+    set({ audienceView: v, cameraPreset: v ? 'audience' : 'persp' })
+  },
+  setCameraPreset: (v) => set({ cameraPreset: v, audienceView: v === 'audience' }),
+  setShowGrid: (v) => set({ showGrid: v }),
+  setShowBounds: (v) => set({ showBounds: v }),
+  setPaletteOpen: (v) => set({ paletteOpen: v }),
+
+  validate: async () => {
+    const { project } = get()
+    if (!project) return
+    const gen = ++compileGen
+    set({ compiling: true, error: null })
+    try {
+      const { project: next, violations, choreography } = await validateShow(project)
+      if (gen !== compileGen) return
+      set({
+        project: next,
+        choreography: choreography ?? null,
+        violations,
+        compiling: false,
+        dirty: false,
+        error: null,
+      })
+    } catch (err) {
+      if (gen !== compileGen) return
+      set({ compiling: false, error: err instanceof Error ? err.message : 'Validate failed' })
+    }
+  },
+
+  addText: async (text) => {
+    const t = text.trim()
+    if (!t) return
+    await get().importAsset(t, t, 'text')
+  },
+
+  renameProject: (name) => {
+    const { project } = get()
+    if (!project) return
+    set({ project: { ...project, name }, dirty: true })
+  },
+
+  undo: () => {
+    const { past, project, future } = get()
+    if (!project || past.length === 0) return
+    const prev = past[past.length - 1]
+    if (!prev) return
+    set({ project: prev, past: past.slice(0, -1), future: [...future, project], dirty: true, playing: false })
+  },
+
+  redo: () => {
+    const { past, project, future } = get()
+    if (!project || future.length === 0) return
+    const next = future[future.length - 1]
+    if (!next) return
+    set({ project: next, future: future.slice(0, -1), past: [...past, project], dirty: true, playing: false })
+  },
   seekViolation: (v) => {
-    set({ playing: false, playhead: v.time, selectedId: null })
+    set({ playing: false, playhead: v.time, selectedDrone: v.droneIds[0] ?? null })
   },
 
   renameFormation: (id, name) => {
     const { project } = get()
     if (!project) return
+    remember(set, get)
     set({
       project: {
         ...project,

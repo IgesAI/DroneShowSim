@@ -15,7 +15,7 @@ from app.models import (
     Violation,
     required_separation,
 )
-from app.safety.geometry import closing_speeds, segment_distances
+from app.safety.geometry import closing_speeds, swept_distances
 from app.trajectory.minjerk import PEAK_S1, min_duration
 from app.trajectory.segment import PATH_SCALE, sample_transition
 
@@ -109,7 +109,7 @@ def validate_transition(
         d_now = np.linalg.norm(frame[ia] - frame[ja], axis=1)
         close = closing_speeds(frame[ia], frame[ja], vel[fi, ia], vel[fi, ja])
         if use_segments and fi + 1 < len(pos):
-            d_seg, u_seg = segment_distances(pos[fi, ia], pos[fi + 1, ia], pos[fi, ja], pos[fi + 1, ja])
+            d_seg, u_seg = swept_distances(pos[fi, ia], pos[fi + 1, ia], pos[fi, ja], pos[fi + 1, ja])
             measured = np.minimum(d_now, d_seg)
         else:
             u_seg = np.zeros(len(ia), dtype=np.float64)

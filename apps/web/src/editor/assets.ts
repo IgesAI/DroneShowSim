@@ -1,4 +1,4 @@
-export type ImportKind = 'svg' | 'glb' | 'obj' | 'stl'
+export type ImportKind = 'svg' | 'glb' | 'obj' | 'stl' | 'text'
 
 const MESH = new Set(['glb', 'obj', 'stl'])
 
@@ -18,7 +18,7 @@ export function acceptFiles(): string {
 
 export async function readAssetFile(file: File): Promise<{ name: string; kind: ImportKind; content: string }> {
   const kind = kindFromName(file.name)
-  if (!kind) throw new Error('Use .svg, .glb, .obj, or .stl')
+  if (!kind) throw new Error('Use SVG, GLB, OBJ, or STL. PNG raster sampling is not compiled yet.')
   const stem = file.name.replace(/\.[^.]+$/, '')
   if (kind === 'svg' || kind === 'obj') {
     return { name: stem, kind, content: await file.text() }

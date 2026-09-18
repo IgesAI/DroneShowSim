@@ -1,6 +1,11 @@
-import type { ShowProject, Violation } from '@lumina/schema'
+import type { Choreography, ShowProject, Violation } from '@lumina/schema'
 
-export type CompileResult = { project: ShowProject; violations: Violation[] }
+export type CompileResult = {
+  project: ShowProject
+  violations: Violation[]
+  /** Absent unless the project has scenes for the compiler to choreograph. */
+  choreography?: Choreography
+}
 
 const BASE = process.env.NEXT_PUBLIC_COMPILER_URL ?? 'http://localhost:8000'
 
@@ -32,7 +37,11 @@ export async function pingCompiler(): Promise<boolean> {
 export async function compileDemo(count = 250, seed = 1): Promise<CompileResult> {
   const res = await request(`/shows/demo?count=${count}&seed=${seed}`, { method: 'POST' })
   const data = await parseJson(res)
-  return { project: data.project as ShowProject, violations: (data.violations ?? []) as Violation[] }
+  return {
+    project: data.project as ShowProject,
+    violations: (data.violations ?? []) as Violation[],
+    choreography: data.choreography as Choreography | undefined,
+  }
 }
 
 export async function compileShow(project: ShowProject, mode: 'preview' | 'full' = 'preview'): Promise<CompileResult> {
@@ -42,7 +51,11 @@ export async function compileShow(project: ShowProject, mode: 'preview' | 'full'
     body: JSON.stringify({ project, mode }),
   })
   const data = await parseJson(res)
-  return { project: data.project as ShowProject, violations: (data.violations ?? []) as Violation[] }
+  return {
+    project: data.project as ShowProject,
+    violations: (data.violations ?? []) as Violation[],
+    choreography: data.choreography as Choreography | undefined,
+  }
 }
 
 export async function generateFormation(body: {
@@ -89,3 +102,7 @@ export const exportGenericCsv = (p: ShowProject) => download('/exports/csv', p, 
 export const exportVviz = (p: ShowProject) => download('/exports/vviz', p, 'show.vviz')
 export const exportSkybrush = (p: ShowProject) => download('/exports/skybrush-csv', p, 'show-skybrush-csv.zip')
 export const exportDshow = (p: ShowProject) => download('/exports/dshow', p, 'show.dshow')
+
+export async function validateShow(project: ShowProject): Promise<CompileResult> {
+  return compileShow(project, 'full')
+}

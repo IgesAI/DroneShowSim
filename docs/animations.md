@@ -31,7 +31,7 @@ Imported skeletal animation becomes a sequence of formations with *identity* ass
 ## Timeline
 
 ```
-FORMATION   [LOGO]────────[MOTORCYCLE]────────[COBRA]
+FORMATION   [LOGO]────────[MOTORCYCLE]────────[DRAGON]
 TRANSITION         [MORPH]            [MORPH]
 ANIMATION               [BACKFLIP]
 ```
@@ -48,7 +48,7 @@ Artistic motion never bypasses the safety compiler.
 
 ## Color
 
-Each formation point already has RGB. SVG stroke/fill (and `style=`) is sampled per path — a red cobra and a cream motorcycle stay those colors. Transitions lerp color with the assignment.
+Each formation point already has RGB. SVG stroke/fill (and `style=`) is sampled per path — a red dragon and a cream motorcycle stay those colors. Transitions lerp color with the assignment.
 
 `chroma` is a color operator: it pulses brightness of the existing per-point colors. It does not replace a light track. Dedicated color keyframes (strobe, hue sweeps, per-drone lighting cues) are a later track, same rule as motion: never bake lights into the formation points.
 

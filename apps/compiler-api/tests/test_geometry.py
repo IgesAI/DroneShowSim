@@ -1,6 +1,6 @@
 import numpy as np
 
-from app.demo import COBRA_LOGO
+from app.demo import DRAGON
 from app.formation.sample import generate_formation
 from app.models import FormationGenerationSettings
 
@@ -10,7 +10,7 @@ def test_svg_exactly_n_points():
         formation_id="f1",
         name="logo",
         asset_id="a1",
-        content=COBRA_LOGO,
+        content=DRAGON,
         kind="svg",
         count=80,
         settings=FormationGenerationSettings(seed=7, widthM=40, heightM=20, depthM=2),
@@ -29,7 +29,7 @@ def test_deterministic_seed():
         formation_id="f1",
         name="logo",
         asset_id="a1",
-        content=COBRA_LOGO,
+        content=DRAGON,
         kind="svg",
         count=40,
         settings=FormationGenerationSettings(seed=3),
@@ -46,7 +46,7 @@ def test_artwork_is_planar():
         formation_id="f1",
         name="logo",
         asset_id="a1",
-        content=COBRA_LOGO,
+        content=DRAGON,
         kind="svg",
         count=80,
         settings=FormationGenerationSettings(seed=7, widthM=40, heightM=20, depthM=0),
@@ -110,10 +110,10 @@ def _min_pair(points) -> float:
 
 def test_points_never_closer_than_min_sep():
     f = generate_formation(
-        formation_id="cobra",
-        name="COBRA",
+        formation_id="text",
+        name="SHOW",
         asset_id="t",
-        content="COBRA",
+        content="SHOW",
         kind="text",
         count=80,
         settings=FormationGenerationSettings(seed=1, widthM=110, heightM=28, depthM=0),
@@ -134,10 +134,12 @@ def test_tight_letter_scales_instead_of_halo():
         settings=FormationGenerationSettings(seed=2, widthM=16, heightM=20, depthM=0),
         min_sep_m=3.7,
     )
-    face = [p for p in f.points if p.importance >= 0.9]
-    back = [p for p in f.points if p.importance < 0.61]
+    # `importance` now carries authored visual weight, so overflow is
+    # identified by the feature the packer tagged it with instead.
+    overflow = [p for p in f.points if p.featureType in {"halo", "spark"}]
+    face = [p for p in f.points if p not in overflow]
     assert len(face) >= 50
-    assert len(back) <= 10
+    assert len(overflow) <= 10
     assert f.generationSettings.packScale > 1.05
     assert max(p.position[0] for p in face) - min(p.position[0] for p in face) > 20
     assert _min_pair(f.points) >= 3.7 * 0.999
@@ -171,10 +173,10 @@ def test_in_flight_paths_and_flips_stay_above_ground():
 
 def test_overflow_never_goes_underground():
     f = generate_formation(
-        formation_id="cobra",
-        name="COBRA",
+        formation_id="text",
+        name="SHOW",
         asset_id="t",
-        content="COBRA",
+        content="SHOW",
         kind="text",
         count=80,
         settings=FormationGenerationSettings(seed=1, widthM=110, heightM=28, depthM=0),

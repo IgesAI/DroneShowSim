@@ -1,8 +1,10 @@
 'use client'
 
 import { useEffect } from 'react'
+import { CommandMenu } from './CommandMenu'
 import { LeftPanel, RightPanel } from './Panels'
 import { Timeline } from './Timeline'
+import { Toolbar } from './Toolbar'
 import { Viewport } from './Viewport'
 import { pingCompiler } from './api'
 import { useEditor } from './store'
@@ -32,8 +34,34 @@ export function Editor() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      const typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
       const s = useEditor.getState()
+      if ((e.ctrlKey || e.metaKey) && e.code === 'KeyK') {
+        e.preventDefault()
+        s.setPaletteOpen(!s.paletteOpen)
+        return
+      }
+      if ((e.ctrlKey || e.metaKey) && e.code === 'KeyZ') {
+        e.preventDefault()
+        if (e.shiftKey) s.redo()
+        else s.undo()
+        return
+      }
+      if ((e.ctrlKey || e.metaKey) && e.code === 'KeyY') {
+        e.preventDefault()
+        s.redo()
+        return
+      }
+      if ((e.ctrlKey || e.metaKey) && e.code === 'KeyS') {
+        e.preventDefault()
+        void s.recompile()
+        return
+      }
+      if (typing) return
+      if (e.code === 'Escape') {
+        s.setPaletteOpen(false)
+        s.setSelectedDrone(null)
+      }
       if (e.code === 'Space') {
         e.preventDefault()
         s.togglePlay()
@@ -59,6 +87,14 @@ export function Editor() {
         e.preventDefault()
         s.stepFrame(1)
       }
+      if (e.code === 'KeyA') s.setAudienceView(!s.audienceView)
+      if (e.code === 'KeyE') s.setViewMode(s.viewMode === 'engineering' ? 'show' : 'engineering')
+      if (e.code === 'KeyG') s.setShowGrid(!s.showGrid)
+      if (e.code === 'KeyT') s.setShowTrajectories(!s.showTrajectories)
+      if (e.code === 'Digit1') s.setCameraPreset('persp')
+      if (e.code === 'Digit2') s.setCameraPreset('top')
+      if (e.code === 'Digit3') s.setCameraPreset('front')
+      if (e.code === 'Digit4') s.setCameraPreset('side')
       if (e.code === 'Delete' || e.code === 'Backspace') {
         e.preventDefault()
         void s.removeSelected()
@@ -69,28 +105,21 @@ export function Editor() {
   }, [])
 
   return (
-    <div className="relative flex h-full flex-col bg-[#111827]">
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-72 bg-[radial-gradient(ellipse_at_top,_rgb(79_70_229_/_0.22),_transparent_60%)]" />
-      <header className="relative z-10 flex items-center justify-between border-b border-white/10 px-5 py-3">
-        <div className="flex items-center gap-3">
-          <div className="grid h-8 w-8 place-items-center rounded-full bg-indigo-600 text-xs font-semibold text-white glow-btn">L</div>
-          <div>
-            <div className="font-[family-name:var(--font-display)] text-sm font-semibold text-white">
-              Lumina <span className="hero-gradient">compiler</span>
-            </div>
-            <div className="text-[11px] text-gray-400">Gorzen Engineering · dshowc</div>
-          </div>
-        </div>
-        <div className="hidden text-[11px] text-gray-400 md:block">geometry → assignment → animation → safety</div>
-      </header>
-      <div className="relative z-10 flex min-h-0 flex-1">
+    <div className="relative flex h-full flex-col bg-chrome">
+      <Toolbar />
+      <div className="h-px bg-line-strong" />
+      <div className="flex min-h-0 flex-1">
         <LeftPanel />
+        <div className="w-px bg-line-strong" />
         <div className="flex min-w-0 flex-1 flex-col">
           <Viewport />
+          <div className="h-px bg-line-strong" />
           <Timeline />
         </div>
+        <div className="w-px bg-line-strong" />
         <RightPanel />
       </div>
+      <CommandMenu />
     </div>
   )
 }

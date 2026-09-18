@@ -1,14 +1,14 @@
 import time
 
 from app.compile import solve_timeline
-from app.demo import cobra_project
+from app.demo import dragon_project
 from app.safety.geometry import segment_distance, segment_distances
 import numpy as np
 
 
 def test_preview_faster_than_full():
-    preview = cobra_project(count=40, seed=1)
-    full = cobra_project(count=40, seed=1)
+    preview = dragon_project(count=40, seed=1)
+    full = dragon_project(count=40, seed=1)
     t0 = time.perf_counter()
     solve_timeline(preview, mode="preview")
     preview_s = time.perf_counter() - t0
@@ -20,7 +20,7 @@ def test_preview_faster_than_full():
 
 
 def test_incremental_skips_unchanged_transitions():
-    first = solve_timeline(cobra_project(count=40, seed=1), mode="preview")
+    first = solve_timeline(dragon_project(count=40, seed=1), mode="preview")
     first.timeline.cues[1].holdDuration += 1.0
     t0 = time.perf_counter()
     second = solve_timeline(first, mode="preview")

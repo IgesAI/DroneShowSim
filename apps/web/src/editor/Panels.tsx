@@ -1,10 +1,11 @@
 'use client'
 
 import type { AnimationMotion, TransitionType } from '@lumina/schema'
-import { useEffect, useState } from 'react'
-import { exportDshow, exportGenericCsv, exportSkybrush, exportVviz } from './api'
+import { useEffect, useMemo, useState } from 'react'
 import { acceptFiles, readAssetFile } from './assets'
+import { droneBudget, droneLabel, formationEnvelope, formationQuality, requiredSep, transitionStats } from './domain'
 import { useEditor } from './store'
+import { Field, PropertyRow, Section, StatusMark } from './ui'
 
 const MOTIONS: { id: AnimationMotion; label: string }[] = [
   { id: 'backflip', label: 'Backflip' },
@@ -17,8 +18,58 @@ const MOTIONS: { id: AnimationMotion; label: string }[] = [
 
 const TRANSITIONS: TransitionType[] = ['morph', 'direct', 'explode', 'orbit', 'wave']
 
-function failExport(err: unknown) {
-  useEditor.setState({ error: err instanceof Error ? err.message : 'Export failed' })
+const PRIMS: { id: string; label: string; svg: string }[] = [
+  {
+    id: 'circle',
+    label: 'Circle',
+    svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="38" fill="none" stroke="#fff" stroke-width="5"/></svg>',
+  },
+  {
+    id: 'square',
+    label: 'Square',
+    svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect x="14" y="14" width="72" height="72" fill="none" stroke="#fff" stroke-width="5"/></svg>',
+  },
+  {
+    id: 'line',
+    label: 'Line',
+    svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path d="M8 50 H92" fill="none" stroke="#fff" stroke-width="6"/></svg>',
+  },
+  {
+    id: 'triangle',
+    label: 'Triangle',
+    svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path d="M50 12 L88 86 H12 Z" fill="none" stroke="#fff" stroke-width="5"/></svg>',
+  },
+]
+
+function AxisGlyph() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" className="shrink-0">
+      <path d="M2 12 H12" stroke="#c44a44" strokeWidth="1.1" />
+      <path d="M2 12 V2" stroke="#3f9d6a" strokeWidth="1.1" />
+      <path d="M2 12 L10 4" stroke="#5b8def" strokeWidth="1.1" />
+    </svg>
+  )
+}
+
+function QuietBtn({
+  children,
+  onClick,
+  disabled,
+}: {
+  children: React.ReactNode
+  onClick?: () => void
+  disabled?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className="h-6 px-1 text-left text-[12px] text-mute hover:text-ink disabled:opacity-30"
+    >
+      {children}
+    </button>
+  )
 }
 
 export function LeftPanel() {
@@ -29,34 +80,43 @@ export function LeftPanel() {
   const patchCount = useEditor((s) => s.patchCount)
   const importAsset = useEditor((s) => s.importAsset)
   const addAnimation = useEditor((s) => s.addAnimation)
+  const addText = useEditor((s) => s.addText)
   const patchPitch = useEditor((s) => s.patchPitch)
   const pitch = project?.droneProfile.launchPitchM ?? 4
   const select = useEditor((s) => s.select)
   const removeAsset = useEditor((s) => s.removeAsset)
   const count = project?.droneProfile.count ?? 80
   const [draftCount, setDraftCount] = useState(count)
+  const [query, setQuery] = useState('')
+  const [text, setText] = useState('')
   useEffect(() => {
     setDraftCount(count)
   }, [count])
+
   const selectedFormation =
     project?.formations.find((f) => f.id === selectedId) ??
     project?.formations.find((f) => f.sourceAssetId === selectedId) ??
     project?.formations.find((f) => f.id === project.timeline.animations.find((a) => a.id === selectedId)?.formationId)
 
+  const assets = useMemo(() => {
+    const list = project?.assets ?? []
+    const q = query.trim().toLowerCase()
+    return q ? list.filter((a) => a.name.toLowerCase().includes(q) || a.kind.includes(q)) : list
+  }, [project?.assets, query])
+
+  const importFile = (file: File) => {
+    void readAssetFile(file)
+      .then(({ name, kind, content }) => importAsset(name, content, kind))
+      .catch((err) => useEditor.setState({ error: err instanceof Error ? err.message : 'Import failed' }))
+  }
+
   return (
-    <aside className="flex w-64 shrink-0 flex-col border-r border-white/10 glass">
-      <div className="border-b border-white/10 px-4 py-3">
-        <div className="text-[11px] uppercase tracking-wide text-gray-400">Project</div>
-        <div className="font-[family-name:var(--font-display)] text-sm text-white">{project?.name ?? 'Cobra demo'}</div>
-      </div>
-      <div className="space-y-4 overflow-y-auto p-4 text-sm">
-        <button type="button" onClick={() => void loadDemo(count)} className="glow-btn w-full rounded-full bg-indigo-600 px-4 py-2 text-left text-sm text-white hover:bg-indigo-500">
-          Load Cobra demo
-        </button>
-        <label className="block">
-          <div className="mb-1 flex justify-between text-[11px] uppercase tracking-wide text-gray-400">
-            <span>Drones</span><span className="text-white">{draftCount}</span>
-          </div>
+    <aside className="flex w-[224px] shrink-0 flex-col bg-chrome">
+      <Section title="Fleet">
+        <PropertyRow label="Drones">
+          <Field type="number" value={draftCount} onChange={(v) => setDraftCount(Number(v) || 0)} />
+        </PropertyRow>
+        <div className="flex h-4 items-center">
           <input
             type="range"
             min={10}
@@ -67,13 +127,12 @@ export function LeftPanel() {
             onPointerUp={() => {
               if (draftCount !== count) void patchCount(draftCount)
             }}
-            className="w-full"
           />
-        </label>
-        <label className="block">
-          <div className="mb-1 flex justify-between text-[11px] uppercase tracking-wide text-gray-400">
-            <span>Pad pitch</span><span className="text-white">{pitch.toFixed(1)} m</span>
-          </div>
+        </div>
+        <PropertyRow label="Pad pitch" unit="m">
+          <Field type="number" value={pitch.toFixed(1)} onChange={(v) => void patchPitch(Number(v), false)} />
+        </PropertyRow>
+        <div className="flex h-4 items-center">
           <input
             type="range"
             min={2}
@@ -82,68 +141,140 @@ export function LeftPanel() {
             value={pitch}
             onChange={(e) => void patchPitch(Number(e.target.value), false)}
             onPointerUp={() => void patchPitch(pitch, true)}
-            className="w-full"
           />
-        </label>
-        <div className="text-[11px] uppercase tracking-wide text-gray-400">Assets</div>
-        <label className="block cursor-pointer rounded-2xl border border-dashed border-indigo-400/40 bg-indigo-500/5 px-3 py-3 text-xs text-indigo-100 hover:border-indigo-300">
-          <div className="font-medium text-white">Upload formation</div>
-          <div className="mt-0.5 text-[11px] text-gray-400">SVG, GLB, OBJ, or STL — 3D models become volumetric swarms</div>
+        </div>
+        {(() => {
+          const artwork =
+            selectedFormation && selectedFormation.role !== 'launch'
+              ? selectedFormation
+              : project?.formations.find((f) => f.role === 'artwork')
+          const budget = droneBudget(artwork, count)
+          const structuralPct = (budget.structural / Math.max(budget.available, 1)) * 100
+          const detailPct = (budget.detail / Math.max(budget.available, 1)) * 100
+          return (
+            <div className="mt-1">
+              <div className="flex h-0.5 overflow-hidden bg-line">
+                <div className="bg-ink" style={{ width: `${structuralPct}%` }} />
+                <div className="bg-mute" style={{ width: `${detailPct}%` }} />
+              </div>
+              <div className="mt-1 text-[11px] text-faint">
+                <span className="num text-mute">{budget.available}</span> available
+                {compiling ? (
+                  <span className="ml-2">Resolving trajectories</span>
+                ) : (
+                  <>
+                    <span className="num ml-2 text-mute">{budget.structural}</span> structural
+                    <span className="num ml-2 text-mute">{budget.detail}</span> detail
+                  </>
+                )}
+              </div>
+            </div>
+          )
+        })()}
+        <QuietBtn onClick={() => void loadDemo(count)}>Load Dragon demo</QuietBtn>
+      </Section>
+
+      <Section title="Create">
+        <div className="flex gap-1">
+          <input
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="Text formation"
+            className="h-6 min-w-0 flex-1 rounded-[2px] bg-raised px-1 text-[12px] text-ink"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && text.trim()) {
+                void addText(text)
+                setText('')
+              }
+            }}
+          />
+          <QuietBtn
+            disabled={!text.trim() || compiling}
+            onClick={() => {
+              void addText(text)
+              setText('')
+            }}
+          >
+            Add
+          </QuietBtn>
+        </div>
+        <div className="mt-1 grid grid-cols-2">
+          {PRIMS.map((p) => (
+            <QuietBtn key={p.id} disabled={compiling} onClick={() => void importAsset(p.label, p.svg, 'svg')}>
+              {p.label}
+            </QuietBtn>
+          ))}
+        </div>
+        <label className="mt-1 block cursor-pointer px-1 text-[12px] leading-6 text-mute hover:text-ink">
+          Import SVG · GLB · STL
           <input
             type="file"
             accept={acceptFiles()}
             className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0]
-              if (!file) return
-              void readAssetFile(file)
-                .then(({ name, kind, content }) => importAsset(name, content, kind))
-                .catch((err) => useEditor.setState({ error: err instanceof Error ? err.message : 'Import failed' }))
+              if (file) importFile(file)
               e.target.value = ''
             }}
           />
         </label>
-        <ul className="space-y-1">
-          {(project?.assets ?? []).map((a) => {
-            const on = selectedId === a.id || selectedFormation?.sourceAssetId === a.id
-            return (
-              <li key={a.id} className={`flex items-center gap-1 rounded-lg px-1.5 py-1 text-xs ${on ? 'bg-indigo-500/15 text-white' : 'text-gray-400'}`}>
-                <button type="button" className="min-w-0 flex-1 truncate text-left" onClick={() => {
-                  const f = project?.formations.find((x) => x.sourceAssetId === a.id)
-                  select(f?.id ?? a.id)
-                }}>
-                  {a.name} · {a.kind}
-                </button>
-                <button
-                  type="button"
-                  title="Delete asset"
-                  className="rounded-full px-1.5 text-gray-500 hover:bg-rose-500/20 hover:text-rose-300"
-                  onClick={() => void removeAsset(a.id)}
+      </Section>
+
+      <Section title="Assets">
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search"
+          className="mb-1 h-6 w-full rounded-[2px] bg-raised px-1 text-[12px] text-ink"
+        />
+        {assets.length === 0 ? (
+          <div className="px-1 py-1 text-[12px] text-faint">
+            DROP A FORMATION
+            <div>SVG · PNG · GLB · STL</div>
+          </div>
+        ) : (
+          <ul className="ui-scroll max-h-[40vh] overflow-auto">
+            {assets.map((a) => {
+              const on = selectedId === a.id || selectedFormation?.sourceAssetId === a.id
+              return (
+                <li
+                  key={a.id}
+                  draggable
+                  onDragStart={(e) => e.dataTransfer.setData('text/lumina-asset', a.id)}
+                  className={`flex h-6 items-center gap-1 px-1 text-[12px] ${on ? 'bg-hover text-ink' : 'text-mute hover:bg-hover'}`}
                 >
-                  ×
-                </button>
-              </li>
-            )
-          })}
-        </ul>
-        <div className="text-[11px] uppercase tracking-wide text-gray-400">Animate selected</div>
-        <div className="grid grid-cols-2 gap-1.5">
+                  <span className="num w-7 shrink-0 text-[11px] text-faint">
+                    {project?.formations.find((f) => f.sourceAssetId === a.id)?.points.length ?? a.kind}
+                  </span>
+                  <button
+                    type="button"
+                    className="min-w-0 flex-1 truncate text-left"
+                    onClick={() => {
+                      const f = project?.formations.find((x) => x.sourceAssetId === a.id)
+                      select(f?.id ?? a.id)
+                    }}
+                  >
+                    {a.name}
+                  </button>
+                  <button type="button" title="Remove" className="px-1 text-faint hover:text-hot" onClick={() => void removeAsset(a.id)}>
+                    ×
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </Section>
+
+      <Section title="Motion" open={false}>
+        <div className="flex flex-wrap">
           {MOTIONS.map((m) => (
-            <button
-              key={m.id}
-              type="button"
-              disabled={!selectedFormation}
-              onClick={() => selectedFormation && addAnimation(selectedFormation.id, m.id)}
-              className="rounded-full border border-white/10 px-2 py-1.5 text-left text-[11px] text-gray-300 hover:border-indigo-400/40 disabled:opacity-30"
-            >
+            <QuietBtn key={m.id} disabled={!selectedFormation} onClick={() => selectedFormation && addAnimation(selectedFormation.id, m.id)}>
               {m.label}
-            </button>
+            </QuietBtn>
           ))}
         </div>
-        <p className="text-[11px] leading-relaxed text-gray-400">
-          {compiling ? 'dshowc is compiling…' : 'Drones are volumes. Pad pitch is ground spacing; capsules grow with speed.'}
-        </p>
-      </div>
+      </Section>
     </aside>
   )
 }
@@ -158,6 +289,8 @@ export function RightPanel() {
   const renameFormation = useEditor((s) => s.renameFormation)
   const violations = useEditor((s) => s.violations)
   const seekViolation = useEditor((s) => s.seekViolation)
+  const live = useEditor((s) => s.live)
+  const selectedDrone = useEditor((s) => s.selectedDrone)
   const formation = project?.formations.find((f) => f.id === selectedId)
   const transition = project?.timeline.transitions.find((t) => t.id === selectedId)
   const animation = project?.timeline.animations.find((a) => a.id === selectedId)
@@ -166,30 +299,65 @@ export function RightPanel() {
   const swatches = formation
     ? [...new Set(formation.points.map((p) => p.color.map((c) => Math.round(c * 255)).join(',')))].slice(0, 8)
     : []
+  const title = formation?.name ?? animation?.name ?? (transition ? `${transition.type}` : 'Show')
 
   return (
-    <aside className="flex w-[300px] shrink-0 flex-col border-l border-white/10 glass">
-      <div className="border-b border-white/10 px-4 py-3">
-        <div className="text-[11px] uppercase tracking-wide text-gray-400">Inspector</div>
-        <div className="font-[family-name:var(--font-display)] text-sm text-white">
-          {formation?.name ?? animation?.name ?? (transition ? `${transition.type} ${transition.duration.toFixed(1)}s` : 'Show')}
+    <aside className="flex w-[240px] shrink-0 flex-col bg-chrome">
+      <div className="flex h-8 items-center justify-between px-2">
+        <div className="truncate text-[13px] text-ink">{title}</div>
+        <div className="flex items-center gap-2">
+          {violations.length > 0 && (
+            <span className="inline-flex items-center gap-1 text-[11px] text-mute">
+              <StatusMark tone={violations.some((v) => v.severity === 'error') ? 'hot' : 'warn'} />
+              <span className="num">{violations.length}</span>
+            </span>
+          )}
+          {formation && (
+            <div className="num text-[11px] text-faint">
+              {formation.points.length} / {profile?.count ?? formation.points.length} assigned
+            </div>
+          )}
         </div>
       </div>
-      <div className="flex-1 space-y-3 overflow-y-auto p-4 text-xs">
+      <div className="ui-scroll min-h-0 flex-1 overflow-y-auto">
+        {live.drone && selectedDrone !== null && (
+          <Section title="Aircraft">
+            <PropertyRow label="Id">
+              <div className="num text-[12px] text-ink">{droneLabel(live.drone.id)}</div>
+            </PropertyRow>
+            <PropertyRow label="X" unit="m">
+              <div className="num text-[12px] text-ink">{live.drone.x.toFixed(2)}</div>
+            </PropertyRow>
+            <PropertyRow label="Y" unit="m">
+              <div className="num text-[12px] text-ink">{live.drone.y.toFixed(2)}</div>
+            </PropertyRow>
+            <PropertyRow label="Z" unit="m">
+              <div className="num text-[12px] text-ink">{live.drone.z.toFixed(2)}</div>
+            </PropertyRow>
+            <PropertyRow label="V" unit="m/s">
+              <div className="num text-[12px] text-ink">{live.drone.v.toFixed(2)}</div>
+            </PropertyRow>
+            <PropertyRow label="A" unit="m/s²">
+              <div className="num text-[12px] text-ink">{live.drone.a.toFixed(2)}</div>
+            </PropertyRow>
+            <PropertyRow label="NN" unit="m">
+              <div className="num text-[12px] text-ink">{live.drone.nn.toFixed(2)}</div>
+            </PropertyRow>
+          </Section>
+        )}
         {formation && cue && (
-          <div className="space-y-3 text-gray-400">
-            <label className="block">
-              <div className="mb-1 uppercase tracking-wide">Name</div>
+          <Section title="Formation">
+            <PropertyRow label="Name">
               <input
-                className="w-full rounded-lg border border-white/10 bg-gray-950/80 px-2 py-1.5 text-white"
+                className="h-6 w-full rounded-[2px] bg-raised px-1 text-[12px] text-ink"
                 value={formation.name}
                 onChange={(e) => renameFormation(formation.id, e.target.value)}
               />
-            </label>
-            <label className="block">
-              <div className="mb-1 flex justify-between uppercase tracking-wide">
-                <span>Hold</span><span className="text-white">{cue.holdDuration.toFixed(1)}s</span>
-              </div>
+            </PropertyRow>
+            <PropertyRow label="Hold" unit="s">
+              <Field type="number" value={cue.holdDuration.toFixed(1)} onChange={(v) => void patchHold(formation.id, Number(v), false)} />
+            </PropertyRow>
+            <div className="flex h-4 items-center">
               <input
                 type="range"
                 min={1}
@@ -198,30 +366,81 @@ export function RightPanel() {
                 value={cue.holdDuration}
                 onChange={(e) => void patchHold(formation.id, Number(e.target.value), false)}
                 onPointerUp={() => void patchHold(formation.id, cue.holdDuration, true)}
-                className="w-full"
               />
-            </label>
-            <div>{formation.points.length} points · {formation.generationSettings.widthM}×{formation.generationSettings.heightM}m</div>
+            </div>
+            {(() => {
+              const env = formationEnvelope(formation)
+              const quality = project ? formationQuality(formation, project.droneProfile.count, requiredSep(project)) : null
+              const nextCue = project?.timeline.cues.find((c) => c.startTime > cue.startTime)
+              const nextTr = nextCue
+                ? project?.timeline.transitions.find((t) => t.fromFormationId === formation.id && t.toFormationId === nextCue.formationId)
+                : undefined
+              const motion = nextTr && project ? transitionStats(project, nextTr) : null
+              return (
+                <>
+                  <div className="mt-1 flex h-6 items-center gap-2 px-0">
+                    <AxisGlyph />
+                    <div className="num text-[11px] text-mute">
+                      {env
+                        ? `${env.width.toFixed(1)} × ${env.depth.toFixed(1)} × ${env.height.toFixed(1)} m`
+                        : '—'}
+                    </div>
+                  </div>
+                  {quality && (
+                    <div className="mt-1 text-[11px] text-faint">
+                      <div>
+                        Silhouette <span className="num text-mute">{Math.round(quality.silhouette * 100)}%</span>
+                      </div>
+                      <div>
+                        Occlusion <span className="num text-mute">{quality.occluded}</span> overlapped
+                      </div>
+                      <div>
+                        Utilization{' '}
+                        <span className="num text-mute">
+                          {formation.points.length} / {project?.droneProfile.count}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                  {motion && (
+                    <div className="mt-1 text-[11px] text-faint">
+                      <div>
+                        Outer trajectory{' '}
+                        <span className="num text-mute">
+                          {motion.outerDeltaM >= 0 ? '+' : ''}
+                          {motion.outerDeltaM.toFixed(1)} m
+                        </span>
+                      </div>
+                      {motion.extraS > 0.05 && (
+                        <div>
+                          Required transition <span className="num text-mute">+{motion.extraS.toFixed(1)} s</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
+              )
+            })()}
             {swatches.length > 0 && (
-              <div>
-                <div className="mb-1 uppercase tracking-wide">Sampled colors</div>
-                <div className="flex gap-1">
-                  {swatches.map((s) => {
-                    const [r, g, b] = s.split(',').map(Number)
-                    return <span key={s} className="h-4 w-4 rounded-full border border-white/20" style={{ background: `rgb(${r},${g},${b})` }} />
-                  })}
-                </div>
+              <div className="mt-1 flex h-6 items-center gap-1">
+                {swatches.map((s) => {
+                  const [r, g, b] = s.split(',').map(Number)
+                  return <span key={s} className="h-2 w-2" style={{ background: `rgb(${r},${g},${b})` }} />
+                })}
               </div>
             )}
-          </div>
+          </Section>
         )}
+
         {animation && (
-          <div className="space-y-3 text-gray-400">
-            <div>Motion {animation.motion} · {animation.kind}</div>
-            <label className="block">
-              <div className="mb-1 flex justify-between uppercase tracking-wide">
-                <span>Cue offset</span><span className="text-white">+{animation.cueOffset.toFixed(1)}s</span>
-              </div>
+          <Section title="Motion">
+            <PropertyRow label="Kind">
+              <div className="text-[12px] text-ink">{animation.motion}</div>
+            </PropertyRow>
+            <PropertyRow label="Offset" unit="s">
+              <Field type="number" value={animation.cueOffset.toFixed(1)} onChange={(v) => void patchAnimation(animation.id, { cueOffset: Number(v) }, false)} />
+            </PropertyRow>
+            <div className="flex h-4 items-center">
               <input
                 type="range"
                 min={0}
@@ -230,13 +449,12 @@ export function RightPanel() {
                 value={animation.cueOffset}
                 onChange={(e) => void patchAnimation(animation.id, { cueOffset: Number(e.target.value) }, false)}
                 onPointerUp={() => void patchAnimation(animation.id, {}, true)}
-                className="w-full"
               />
-            </label>
-            <label className="block">
-              <div className="mb-1 flex justify-between uppercase tracking-wide">
-                <span>Duration</span><span className="text-white">{animation.duration.toFixed(1)}s</span>
-              </div>
+            </div>
+            <PropertyRow label="Duration" unit="s">
+              <Field type="number" value={animation.duration.toFixed(1)} onChange={(v) => void patchAnimation(animation.id, { duration: Number(v) }, false)} />
+            </PropertyRow>
+            <div className="flex h-4 items-center">
               <input
                 type="range"
                 min={0.5}
@@ -245,82 +463,130 @@ export function RightPanel() {
                 value={animation.duration}
                 onChange={(e) => void patchAnimation(animation.id, { duration: Number(e.target.value) }, false)}
                 onPointerUp={() => void patchAnimation(animation.id, {}, true)}
-                className="w-full"
               />
-            </label>
-          </div>
+            </div>
+          </Section>
         )}
+
         {transition && (
-          <div className="space-y-3 text-gray-400">
-            <label className="block">
-              <div className="mb-1 uppercase tracking-wide">Style</div>
+          <Section title="Transition">
+            <PropertyRow label="Style">
               <select
-                className="w-full rounded-lg border border-white/10 bg-gray-950/80 px-2 py-1.5 text-white"
+                className="h-6 w-full rounded-[2px] bg-raised px-1 text-[12px] text-ink"
                 value={transition.type}
                 onChange={(e) => void patchTransition(transition.id, { type: e.target.value as TransitionType })}
               >
                 {TRANSITIONS.map((t) => (
-                  <option key={t} value={t}>{t}</option>
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
                 ))}
               </select>
-            </label>
-            <label className="block">
-              <div className="mb-1 flex justify-between uppercase tracking-wide">
-                <span>Duration</span><span className="text-white">{transition.duration.toFixed(1)}s · {transition.durationMode}</span>
-              </div>
+            </PropertyRow>
+            <PropertyRow label="Duration" unit="s">
+              <Field
+                type="number"
+                value={transition.duration.toFixed(1)}
+                onChange={(v) => void patchTransition(transition.id, { duration: Number(v), durationMode: 'manual' }, false)}
+              />
+            </PropertyRow>
+            <div className="flex h-4 items-center">
               <input
                 type="range"
                 min={1}
-                max={20}
+                max={120}
                 step={0.1}
-                value={transition.duration}
+                value={Math.min(120, transition.duration)}
                 onChange={(e) => void patchTransition(transition.id, { duration: Number(e.target.value), durationMode: 'manual' }, false)}
                 onPointerUp={() => void patchTransition(transition.id, { durationMode: 'manual' }, true)}
-                className="w-full"
               />
-            </label>
-            <div>Assignments {transition.assignment.length}</div>
-          </div>
+            </div>
+            <PropertyRow label="Assign">
+              <div className="num text-[12px] text-ink">
+                {transition.assignment.length} / {profile?.count ?? 0}
+              </div>
+            </PropertyRow>
+            {project &&
+              (() => {
+                const stats = transitionStats(project, transition)
+                if (!stats) return null
+                return (
+                  <div className="mt-1 text-[11px] text-faint">
+                    <div>
+                      Distance <span className="num text-mute">{stats.meanM.toFixed(1)}</span> m mean
+                    </div>
+                    <div>
+                      Crossings <span className="num text-mute">{stats.crossings}</span>
+                    </div>
+                    <div>
+                      Vmax <span className="num text-mute">{stats.vmax.toFixed(2)}</span> m/s
+                    </div>
+                    <div>
+                      Min sep <span className="num text-mute">{stats.minSep.toFixed(2)}</span> m
+                    </div>
+                  </div>
+                )
+              })()}
+          </Section>
         )}
+
         {profile && (
-          <div className="rounded-2xl border border-white/10 bg-gray-900/60 p-3 text-[11px] text-gray-400">
-            <div>min sep {profile.minimumSeparationM}m + 2×r + nav/wind</div>
-            <div>horiz {profile.maxHorizontalSpeedMps} · up {profile.maxAscentSpeedMps} · down {profile.maxDescentSpeedMps}</div>
-            <div>jerk {profile.maxJerkMps3} · GNSS {project?.safetyProfile.gnssMode}</div>
-          </div>
+          <Section title="Constraints" open={!formation && !animation && !transition}>
+            <PropertyRow label="Min sep" unit="m">
+              <div className="num text-[12px] text-ink">{profile.minimumSeparationM.toFixed(2)}</div>
+            </PropertyRow>
+            <PropertyRow label="Horiz" unit="m/s">
+              <div className="num text-[12px] text-ink">{profile.maxHorizontalSpeedMps}</div>
+            </PropertyRow>
+            <PropertyRow label="Ascent" unit="m/s">
+              <div className="num text-[12px] text-ink">{profile.maxAscentSpeedMps}</div>
+            </PropertyRow>
+            <PropertyRow label="Jerk" unit="m/s³">
+              <div className="num text-[12px] text-ink">{profile.maxJerkMps3}</div>
+            </PropertyRow>
+            <PropertyRow label="GNSS">
+              <div className="text-[12px] text-ink">{project?.safetyProfile.gnssMode}</div>
+            </PropertyRow>
+          </Section>
         )}
-        {violations.length > 0 && (
-          <div>
-            <div className="mb-1 uppercase tracking-wide text-rose-300">Capsule warnings</div>
-            <ul className="max-h-32 space-y-1 overflow-y-auto">
-              {violations.slice(0, 12).map((v, i) => (
+
+        <Section title="Safety" open={false}>
+          <div className="mb-1 flex h-6 items-center gap-1 text-[12px] text-mute">
+            <StatusMark tone={violations.some((v) => v.severity === 'error') ? 'hot' : violations.length ? 'warn' : 'ok'} />
+            <span className="num">{violations.length}</span>
+            <span>{violations.length === 1 ? 'marker' : 'markers'}</span>
+          </div>
+          {violations.length === 0 ? (
+            <div className="text-[12px] text-faint">No separation events in the last compile.</div>
+          ) : (
+            <ul>
+              {violations.slice(0, 6).map((v, i) => (
                 <li key={`${v.time}-${i}`}>
-                  <button type="button" className="w-full rounded-lg border border-rose-400/20 px-2 py-1 text-left text-[10px] text-rose-200 hover:bg-rose-500/10" onClick={() => seekViolation(v)}>
-                    {v.message}
+                  <button type="button" onClick={() => seekViolation(v)} className="flex w-full items-baseline gap-2 py-0.5 text-left hover:bg-hover">
+                    <span className={`w-0.5 self-stretch ${v.severity === 'error' ? 'bg-hot' : 'bg-warn'}`} />
+                    <span className="w-8 text-[11px] text-faint">SEP</span>
+                    <span className="num text-[12px] text-ink">{v.measured.toFixed(2)}</span>
+                    <span className="num text-[11px] text-faint">&lt; {v.required.toFixed(2)}</span>
+                    <span className="num ml-auto text-[11px] text-faint">{droneLabel(v.droneIds[0] ?? 0)}</span>
                   </button>
                 </li>
               ))}
             </ul>
-          </div>
-        )}
-        {(project?.compilerNotes ?? []).length > 0 && (
-          <div className="space-y-1 text-[10px] text-amber-200/80">
-            {project?.compilerNotes.slice(0, 6).map((n, i) => (
-              <div key={i}>{n.message}</div>
-            ))}
-          </div>
-        )}
+          )}
+          {(project?.compilerNotes ?? []).slice(0, 4).map((n, i) => (
+            <div key={i} className="mt-1 text-[11px] text-mute">
+              {n.message}
+            </div>
+          ))}
+        </Section>
+
         {(formation || animation) && formation?.role !== 'launch' && (
-          <button type="button" onClick={() => void removeSelected()} className="w-full rounded-full border border-rose-400/30 px-3 py-2 text-left text-rose-300 hover:bg-rose-500/10">
-            Delete selected
-          </button>
+          <div className="px-2 py-1">
+            <button type="button" onClick={() => void removeSelected()} className="h-6 text-[12px] text-faint hover:text-hot">
+              Delete selected
+            </button>
+          </div>
         )}
-      </div>
-      <div className="space-y-2 border-t border-white/10 p-4">
-        <button type="button" disabled={!project} onClick={() => project && void exportDshow(project).catch(failExport)} className="w-full rounded-full border border-white/10 px-3 py-2 text-left text-xs text-gray-200">Export .dshow</button>
-        <button type="button" disabled={!project} onClick={() => project && void exportGenericCsv(project).catch(failExport)} className="w-full rounded-full border border-white/10 px-3 py-2 text-left text-xs text-gray-200">Export generic CSV</button>
-        <button type="button" disabled={!project} onClick={() => project && void exportVviz(project).catch(failExport)} className="w-full rounded-full border border-white/10 px-3 py-2 text-left text-xs text-gray-200">Export VVIZ (viz only)</button>
-        <button type="button" disabled={!project} onClick={() => project && void exportSkybrush(project).catch(failExport)} className="glow-btn w-full rounded-full bg-indigo-600 px-3 py-2 text-left text-xs text-white">Export Skybrush CSV.zip</button>
       </div>
     </aside>
   )
