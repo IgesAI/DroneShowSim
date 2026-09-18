@@ -1,0 +1,13 @@
+services:
+  compiler-api:
+    build: ./apps/compiler-api
+    ports:
+      - "8000:8000"
+  web:
+    build: ./apps/web
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_COMPILER_URL: http://compiler-api:8000
+    depends_on:
+      - compiler-api

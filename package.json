@@ -1,0 +1,16 @@
+{
+  "name": "lumina",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/web",
+    "packages/schema",
+    "packages/simulator"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @lumina/web",
+    "dev:web": "npm run dev -w @lumina/web",
+    "dev:api": "python -m uvicorn app.main:app --reload --app-dir apps/compiler-api --port 8000",
+    "test:api": "python -m pytest apps/compiler-api/tests"
+  }
+}
