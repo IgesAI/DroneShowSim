@@ -16,7 +16,8 @@ import {
 import { useEffect, useMemo, useRef } from 'react'
 import type { InstancedMesh, LineSegments as LineSegmentsType } from 'three'
 import { BufferAttribute, BufferGeometry, Color, Object3D } from 'three'
-import { acceptFiles, readAssetFile } from './assets'
+import { readAssetFile } from './assets'
+import { ConversionStage } from './Conversion'
 import { droneLabel, nearestNeighbor, showClock } from './domain'
 import { useEditor } from './store'
 
@@ -511,6 +512,9 @@ export function Viewport() {
   useEffect(() => {
     const onDrop = (e: DragEvent) => {
       e.preventDefault()
+      // One conversion at a time: dropping a second asset over the stage
+      // would silently replace the one being tuned.
+      if (useEditor.getState().conversion) return
       const file = e.dataTransfer?.files?.[0]
       if (!file) return
       void readAssetFile(file)
@@ -556,7 +560,7 @@ export function Viewport() {
           <div className="max-w-sm text-left">
             <div className="text-[16px] tracking-wide text-ink">{compiling ? 'RESOLVING TRAJECTORIES' : 'DROP A FORMATION'}</div>
             <p className="mt-2 text-[13px] leading-relaxed text-mute">
-              {compiling ? `dshowc is assigning ${n || 80} drones to the launch grid.` : 'SVG · PNG · GLB · STL'}
+              {compiling ? `dshowc is assigning ${n || 80} drones to the launch grid.` : 'SVG · GLB · OBJ · STL'}
             </p>
           </div>
         </div>
@@ -615,6 +619,7 @@ export function Viewport() {
       )}
       {project && <AudienceCompass headingRad={project.venue.showHeadingRad} />}
       {error && <div className="absolute left-2 top-8 max-w-md text-[12px] text-hot">{error}</div>}
+      <ConversionStage />
     </div>
   )
 }

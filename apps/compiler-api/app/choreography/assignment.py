@@ -161,7 +161,6 @@ def _restricted(cost: np.ndarray) -> dict[int, int]:
     so callers must report that the transition was not optimally assigned
     rather than presenting it as a checked result.
     """
-    n = cost.shape[0]
     k = min(48, cost.shape[1])
     used: set[int] = set()
     mapping: dict[int, int] = {}

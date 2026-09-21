@@ -104,14 +104,14 @@ class DragonBreathParams(BaseModel):
     emberLife: float = 0.46
     colorGradient: list[ColorStop] = Field(default_factory=lambda: list(DEFAULT_GRADIENT))
 
-    def color_at(self, l: float) -> Rgb:
+    def color_at(self, along: float) -> Rgb:
         stops = self.colorGradient or DEFAULT_GRADIENT
-        if l <= stops[0].stop:
+        if along <= stops[0].stop:
             return stops[0].rgbLinear
         for a, b in zip(stops, stops[1:], strict=False):
-            if l <= b.stop:
+            if along <= b.stop:
                 span = b.stop - a.stop
-                u = 0.0 if span <= 1e-9 else (l - a.stop) / span
+                u = 0.0 if span <= 1e-9 else (along - a.stop) / span
                 return (
                     a.rgbLinear[0] + u * (b.rgbLinear[0] - a.rgbLinear[0]),
                     a.rgbLinear[1] + u * (b.rgbLinear[1] - a.rgbLinear[1]),

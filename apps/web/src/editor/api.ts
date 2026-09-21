@@ -1,4 +1,14 @@
-import type { Choreography, ShowProject, Violation } from '@lumina/schema'
+import type {
+  Choreography,
+  ConversionReport,
+  DroneProfile,
+  Formation,
+  SafetyProfile,
+  SamplingMode,
+  ShowProject,
+  VenueConfiguration,
+  Violation,
+} from '@lumina/schema'
 
 export type CompileResult = {
   project: ShowProject
@@ -58,18 +68,35 @@ export async function compileShow(project: ShowProject, mode: 'preview' | 'full'
   }
 }
 
-export async function generateFormation(body: {
+export type GenerateFormationBody = {
   assetId: string
   name: string
   content: string
   kind: 'svg' | 'text' | 'glb' | 'obj' | 'stl'
-  mode?: 'feature' | 'surface' | 'silhouette' | 'audience'
+  mode?: SamplingMode
   depthMeters?: number
   droneCount: number
   widthMeters: number
   heightMeters: number
   seed: number
-}) {
+  /**
+   * Send these whenever a project exists. Spacing and the cleared ceiling
+   * belong to the fleet and the site, and without them the conversion the
+   * operator approves is not the one the compiler will build.
+   */
+  droneProfile?: DroneProfile
+  safetyProfile?: SafetyProfile
+  venue?: VenueConfiguration
+}
+
+export type GenerateFormationResult = {
+  formationId: string
+  pointCount: number
+  formation: Formation
+  report: ConversionReport
+}
+
+export async function generateFormation(body: GenerateFormationBody): Promise<GenerateFormationResult> {
   const res = await request(
     '/formations/generate',
     {

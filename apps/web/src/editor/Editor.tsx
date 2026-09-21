@@ -36,6 +36,10 @@ export function Editor() {
       const tag = (e.target as HTMLElement | null)?.tagName
       const typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
       const s = useEditor.getState()
+      // The conversion stage owns the viewport and its own keys. Leaving the
+      // show shortcuts live would scrub a timeline nobody can see, and Delete
+      // would remove a formation behind the overlay.
+      if (s.conversion) return
       if ((e.ctrlKey || e.metaKey) && e.code === 'KeyK') {
         e.preventDefault()
         s.setPaletteOpen(!s.paletteOpen)

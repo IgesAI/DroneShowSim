@@ -9,11 +9,15 @@ from app.models import (
     SCHEMA_VERSION,
     CompilerNote,
     Cue,
+    DroneProfile,
     Formation,
     FormationGenerationSettings,
+    Rgb,
+    SafetyProfile,
     ShowProject,
     ShowSlot,
     Transition,
+    VenueConfiguration,
     Violation,
     required_separation,
 )
@@ -26,9 +30,12 @@ from app.transition.assign import (
 
 
 LAUNCH_ID = "frm_launch"
+# Kinds the samplers can actually turn into points. Anything else (a raster,
+# for now) falls back to SVG handling rather than failing the whole compile.
+ARTWORK_KINDS = {"svg", "text", "glb", "obj", "stl"}
 
 
-def morph_safe_spacing(project: ShowProject) -> float:
+def morph_spacing(profile: DroneProfile, safety: SafetyProfile) -> float:
     """Point spacing a formation needs so morphing into the next one is legal.
 
     A synchronised morph under squared-distance assignment dips to
@@ -36,7 +43,50 @@ def morph_safe_spacing(project: ShowProject) -> float:
     the required separation therefore guarantees a violation the moment they
     move, so the margin belongs in the packer rather than in a repair pass.
     """
-    return required_separation(project.droneProfile, project.safetyProfile) * MORPH_SEPARATION_BOUND
+    return required_separation(profile, safety) * MORPH_SEPARATION_BOUND
+
+
+def morph_safe_spacing(project: ShowProject) -> float:
+    return morph_spacing(project.droneProfile, project.safetyProfile)
+
+
+def artwork_formation(
+    *,
+    formation_id: str,
+    name: str,
+    asset_id: str,
+    content: str,
+    kind: str,
+    settings: FormationGenerationSettings,
+    profile: DroneProfile,
+    safety: SafetyProfile,
+    venue: VenueConfiguration,
+    color: Rgb | None = None,
+) -> Formation:
+    """The one call that turns an asset into drone positions.
+
+    Both the compiler and the conversion preview come through here, and that
+    is the whole point of the function. They used to build the same artwork
+    two different ways: the preview packed at the bare required separation
+    with no venue at all, the compiler packed at morph spacing against the
+    cleared ceiling. So an operator could approve a figure roughly 40% denser
+    than the one the show would actually contain, and would never be told the
+    shape did not fit the airspace. A preview that is not the real call is
+    not a preview.
+    """
+    return generate_formation(
+        formation_id=formation_id,
+        name=name,
+        asset_id=asset_id,
+        content=content,
+        kind=kind if kind in ARTWORK_KINDS else "svg",
+        count=profile.count,
+        settings=settings,
+        color=color,
+        min_sep_m=morph_spacing(profile, safety),
+        ground_z=venue.groundZ,
+        ceiling_z=venue.groundZ + venue.maxAltitudeM,
+    )
 
 
 def ensure_formations(project: ShowProject) -> tuple[ShowProject, set[str]]:
@@ -54,17 +104,16 @@ def ensure_formations(project: ShowProject) -> tuple[ShowProject, set[str]]:
         if not asset:
             continue
         settings = formation.generationSettings or FormationGenerationSettings()
-        project.formations[i] = generate_formation(
+        project.formations[i] = artwork_formation(
             formation_id=formation.id,
             name=formation.name,
             asset_id=asset.id,
             content=asset.content,
-            kind=asset.kind if asset.kind in {"svg", "text", "glb", "obj", "stl"} else "svg",
-            count=count,
+            kind=asset.kind,
             settings=settings,
-            min_sep_m=morph_safe_spacing(project),
-            ground_z=project.venue.groundZ,
-            ceiling_z=project.venue.groundZ + project.venue.maxAltitudeM,
+            profile=project.droneProfile,
+            safety=project.safetyProfile,
+            venue=project.venue,
         )
         rebuilt.add(formation.id)
     return project, rebuilt

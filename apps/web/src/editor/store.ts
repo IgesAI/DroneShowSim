@@ -12,6 +12,9 @@ import {
   type AnimationClip,
   type AnimationMotion,
   type Choreography,
+  type ConversionReport,
+  type Formation,
+  type SamplingMode,
   type ShowProject,
   type Transition,
   type TransitionType,
@@ -24,6 +27,35 @@ import { isMesh, type ImportKind } from './assets'
 export type CameraPreset = 'persp' | 'top' | 'front' | 'side' | 'audience'
 /** `show` draws what the audience sees; `engineering` draws every physical drone. */
 export type ViewMode = 'show' | 'engineering'
+
+/** The knobs that change what an asset becomes. Everything else is the venue. */
+export type ConversionSettings = {
+  mode: SamplingMode
+  widthM: number
+  heightM: number
+  depthM: number
+  seed: number
+}
+
+/**
+ * An asset part-way through becoming a formation.
+ *
+ * Nothing here is in the show yet. Import used to append a formation, a cue
+ * and a transition and then recompile the whole timeline before the operator
+ * had seen a single drone, which made "what will this look like as drones?"
+ * a question you could only answer by committing to it and undoing.
+ */
+export type Conversion = {
+  assetId: string
+  name: string
+  kind: ImportKind
+  content: string
+  settings: ConversionSettings
+  formation: Formation | null
+  report: ConversionReport | null
+  generating: boolean
+  error: string | null
+}
 
 export function emptyShow(count = 80): ShowProject {
   return {
@@ -44,6 +76,8 @@ export function emptyShow(count = 80): ShowProject {
       altitudeDatum: 'local-z',
       groundZ: 0,
       showHeadingRad: 0,
+      maxAltitudeM: 150,
+      radiusM: 400,
       audience: defaultAudience(),
     },
     assets: [],
@@ -116,6 +150,8 @@ type EditorState = {
     drone: { id: number; x: number; y: number; z: number; v: number; a: number; nn: number } | null
   }
   paletteOpen: boolean
+  /** Non-null while an asset is being converted and has not joined the show. */
+  conversion: Conversion | null
   loadDemo: (count?: number) => Promise<void>
   recompile: () => Promise<void>
   validate: () => Promise<void>
@@ -139,6 +175,10 @@ type EditorState = {
   patchCount: (n: number) => Promise<void>
   importAsset: (name: string, content: string, kind: ImportKind) => Promise<void>
   importSvg: (name: string, content: string) => Promise<void>
+  beginConversion: (name: string, content: string, kind: ImportKind) => Promise<void>
+  retuneConversion: (patch: Partial<ConversionSettings>) => Promise<void>
+  commitConversion: () => Promise<void>
+  cancelConversion: () => void
   addAnimation: (formationId: string, motion: AnimationMotion) => Promise<void>
   select: (id: string | null) => void
   removeSelected: () => Promise<void>
@@ -159,6 +199,8 @@ type EditorState = {
 }
 
 let compileGen = 0
+/** Retuning is live, so a slow request must never overwrite a newer result. */
+let conversionGen = 0
 
 function remember(set: (p: Partial<EditorState>) => void, get: () => EditorState) {
   const p = get().project
@@ -189,6 +231,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   selectedDrone: null,
   live: { airborne: 0, warnings: 0, dark: 0, drone: null },
   paletteOpen: false,
+  conversion: null,
 
   loadDemo: async (count = 80) => {
     const gen = ++compileGen
@@ -286,53 +329,130 @@ export const useEditor = create<EditorState>((set, get) => ({
     }
   },
 
-  importAsset: async (name, content, kind) => {
+  importAsset: async (name, content, kind) => get().beginConversion(name, content, kind),
+
+  importSvg: async (name, content) => get().beginConversion(name, content, 'svg'),
+
+  beginConversion: async (name, content, kind) => {
     const project = get().project ?? emptyShow()
     if (!get().project) set({ project })
-    remember(set, get)
-    set({ compiling: true, error: null })
-    const id = `asset_${Math.random().toString(36).slice(2, 8)}`
     const mesh = isMesh(kind)
-    try {
-      const generated = await generateFormation({
-        assetId: id,
+    set({
+      playing: false,
+      error: null,
+      conversion: {
+        assetId: `asset_${Math.random().toString(36).slice(2, 8)}`,
         name,
-        content,
         kind,
-        mode: mesh ? 'surface' : 'feature',
-        depthMeters: mesh ? 48 : 0,
-        droneCount: project.droneProfile.count,
-        widthMeters: mesh ? 48 : 90,
-        heightMeters: mesh ? 48 : 42,
-        seed: 1,
-      })
-      const formation = generated.formation
-      const formations = [...project.formations, formation]
-      const cue = { id: `cue_${id}`, formationId: formation.id, startTime: 0, holdDuration: 5, phase: 'show' as const }
-      const cues = [...project.timeline.cues]
-      const land = cues.findIndex((c) => c.phase === 'landing')
-      if (land >= 0) cues.splice(land, 0, cue)
-      else cues.push(cue)
-      const next: ShowProject = {
-        ...project,
-        name: project.assets.length === 0 ? name : project.name,
-        assets: [...project.assets, { id, name, kind, content }],
-        formations,
-        timeline: {
-          ...project.timeline,
-          cues,
-          transitions: rebuildTransitions({ ...project, formations }, cues),
-          animations: project.timeline.animations ?? [],
+        content,
+        settings: {
+          mode: mesh ? 'surface' : 'feature',
+          widthM: mesh ? 48 : 90,
+          heightM: mesh ? 48 : 42,
+          depthM: mesh ? 48 : 0,
+          seed: 1,
         },
-      }
-      set({ project: next, selectedId: formation.id })
-      await get().recompile()
+        formation: null,
+        report: null,
+        generating: true,
+        error: null,
+      },
+    })
+    await get().retuneConversion({})
+  },
+
+  retuneConversion: async (patch) => {
+    const current = get().conversion
+    const project = get().project
+    if (!current || !project) return
+    const settings = { ...current.settings, ...patch }
+    const gen = ++conversionGen
+    set({ conversion: { ...current, settings, generating: true, error: null } })
+    try {
+      const out = await generateFormation({
+        assetId: current.assetId,
+        name: current.name,
+        content: current.content,
+        kind: current.kind,
+        mode: settings.mode,
+        widthMeters: settings.widthM,
+        heightMeters: settings.heightM,
+        depthMeters: settings.depthM,
+        seed: settings.seed,
+        droneCount: project.droneProfile.count,
+        // The venue is what makes this a preview rather than a sketch: the
+        // compiler packs for the morph and against the cleared ceiling, so
+        // the conversion has to be handed the same facts.
+        droneProfile: project.droneProfile,
+        safetyProfile: project.safetyProfile,
+        venue: project.venue,
+      })
+      if (gen !== conversionGen) return
+      const live = get().conversion
+      if (!live || live.assetId !== current.assetId) return
+      set({
+        conversion: {
+          ...live,
+          settings,
+          formation: out.formation,
+          report: out.report,
+          generating: false,
+          error: null,
+        },
+      })
     } catch (err) {
-      set({ compiling: false, error: err instanceof Error ? err.message : 'Import failed' })
+      if (gen !== conversionGen) return
+      const live = get().conversion
+      if (!live) return
+      set({
+        conversion: {
+          ...live,
+          generating: false,
+          error: err instanceof Error ? err.message : 'Conversion failed',
+        },
+      })
     }
   },
 
-  importSvg: async (name, content) => get().importAsset(name, content, 'svg'),
+  commitConversion: async () => {
+    const conversion = get().conversion
+    const project = get().project
+    if (!conversion?.formation || !project) return
+    const { assetId, name, kind, content, formation } = conversion
+    remember(set, get)
+    set({ conversion: null, compiling: true, error: null })
+    const formations = [...project.formations, formation]
+    const cue = {
+      id: `cue_${assetId}`,
+      formationId: formation.id,
+      startTime: 0,
+      holdDuration: 5,
+      phase: 'show' as const,
+    }
+    const cues = [...project.timeline.cues]
+    const land = cues.findIndex((c) => c.phase === 'landing')
+    if (land >= 0) cues.splice(land, 0, cue)
+    else cues.push(cue)
+    const next: ShowProject = {
+      ...project,
+      name: project.assets.length === 0 ? name : project.name,
+      assets: [...project.assets, { id: assetId, name, kind, content }],
+      formations,
+      timeline: {
+        ...project.timeline,
+        cues,
+        transitions: rebuildTransitions({ ...project, formations }, cues),
+        animations: project.timeline.animations ?? [],
+      },
+    }
+    set({ project: next, selectedId: formation.id })
+    await get().recompile()
+  },
+
+  cancelConversion: () => {
+    conversionGen += 1
+    set({ conversion: null })
+  },
 
   addAnimation: async (formationId, motion) => {
     const { project } = get()

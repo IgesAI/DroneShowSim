@@ -254,6 +254,20 @@ class GenerateFormationRequest(BaseModel):
     depthMeters: float = 0.0
     seed: int = 1
     color: Rgb | None = None
+    # The show this asset is being converted for. Spacing and the cleared
+    # ceiling are properties of the fleet and the site, not of the drawing,
+    # and leaving them out is what let the preview disagree with the compile.
+    # Optional so a bare request still works, but a caller that has a project
+    # should always send them.
+    droneProfile: DroneProfile | None = None
+    safetyProfile: SafetyProfile | None = None
+    venue: VenueConfiguration | None = None
+
+    def context(self) -> tuple[DroneProfile, SafetyProfile, VenueConfiguration]:
+        profile = self.droneProfile or DroneProfile(count=self.droneCount)
+        if profile.count != self.droneCount:
+            profile = profile.model_copy(update={"count": self.droneCount})
+        return profile, self.safetyProfile or SafetyProfile(), self.venue or VenueConfiguration()
 
 
 class SolveTransitionRequest(BaseModel):

@@ -7,24 +7,21 @@ from fastapi.responses import Response
 from app.choreography.audience import AudienceView
 from app.choreography.pipeline import Choreography, ChoreographyOptions, compile_choreography
 from app.choreography.validate import Geofence
-from app.compile import ensure_formations, solve_timeline
+from app.compile import artwork_formation, ensure_formations, morph_spacing, solve_timeline
 from app.demo import dragon_project
 from app.exporters.dshow_zip import export_dshow
 from app.exporters.generic_csv import export_generic_csv
 from app.exporters.skybrush_csv import export_skybrush_csv
 from app.exporters.vviz import export_vviz
-from app.formation.sample import generate_formation
+from app.formation.report import conversion_report
 from app.models import (
     COMPILER_VERSION,
     SCHEMA_VERSION,
     CompileShowRequest,
-    DroneProfile,
     FormationGenerationSettings,
     GenerateFormationRequest,
-    SafetyProfile,
     ShowProject,
     SolveTransitionRequest,
-    required_separation,
 )
 from app.safety.validate import validate_transition
 from app.transition.assign import assign_formations, swap_worst_crossings
@@ -46,13 +43,18 @@ def health():
 
 @app.post("/formations/generate")
 def formations_generate(req: GenerateFormationRequest):
-    formation = generate_formation(
+    """Convert one asset into drone positions, exactly as a compile would.
+
+    This is the conversion step in its own right: an operator can see and
+    tune what an image or model becomes before any of it reaches a show.
+    """
+    profile, safety, venue = req.context()
+    formation = artwork_formation(
         formation_id=req.assetId,
         name=req.name,
         asset_id=req.assetId,
         content=req.content,
         kind=req.kind,
-        count=req.droneCount,
         settings=FormationGenerationSettings(
             mode=req.mode,
             widthM=req.widthMeters,
@@ -60,13 +62,17 @@ def formations_generate(req: GenerateFormationRequest):
             depthM=req.depthMeters,
             seed=req.seed,
         ),
+        profile=profile,
+        safety=safety,
+        venue=venue,
         color=req.color,
-        min_sep_m=required_separation(DroneProfile(count=req.droneCount), SafetyProfile()),
     )
+    report = conversion_report(formation, profile, safety, venue, morph_spacing(profile, safety))
     return {
         "formationId": formation.id,
         "pointCount": len(formation.points),
         "formation": formation.model_dump(),
+        "report": report.model_dump(),
         "bounds": {
             "width": req.widthMeters,
             "height": req.heightMeters,

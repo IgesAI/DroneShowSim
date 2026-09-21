@@ -71,6 +71,12 @@ export type VenueConfiguration = {
   altitudeDatum: AltitudeDatum
   groundZ: number
   showHeadingRad: number
+  /**
+   * Airspace the show is cleared for. Belongs to the site, not the aircraft:
+   * formations are packed against this ceiling and later judged against it.
+   */
+  maxAltitudeM: number
+  radiusM: number
   audience: AudienceCamera
 }
 
@@ -98,6 +104,9 @@ export type FormationPoint = {
   color: Rgb
   importance: number
   sourceFeatureId?: number
+  featureId?: string | null
+  /** `halo`, `spark` and `fallback` mean the packer could not seat this point on the artwork. */
+  featureType?: string | null
 }
 
 export type FormationGenerationSettings = {
@@ -108,6 +117,39 @@ export type FormationGenerationSettings = {
   seed: number
   samplerVersion?: number
   packScale?: number
+  /** How far the packed figure still pokes through the cleared ceiling. */
+  ceilingOvershootM?: number
+}
+
+/**
+ * Whether an asset became a formation worth flying. Measured off the
+ * formation the compiler would build, not off the artwork that was dropped
+ * in: the packer grows, relaxes and overflows artwork to seat the fleet.
+ */
+export type ConversionReport = {
+  pointCount: number
+  fleetCount: number
+  minSeparationM: number
+  /** The margin a formation is packed to so the morph out of it stays legal. */
+  requiredSeparationM: number
+  /** The separation two aircraft must never breach. */
+  hardMinimumM: number
+  spacingOk: boolean
+  safeSeparation: boolean
+  packScale: number
+  ceilingOvershootM: number
+  fitsAirspace: boolean
+  overflowCount: number
+  structuralCount: number
+  detailCount: number
+  /** False when the artwork carries no per-feature importance to split on. */
+  authoredImportance: boolean
+  widthM: number
+  depthM: number
+  heightM: number
+  lowestZ: number
+  highestZ: number
+  notes: string[]
 }
 
 export type Formation = {

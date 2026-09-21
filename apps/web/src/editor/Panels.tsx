@@ -82,6 +82,7 @@ export function LeftPanel() {
   const addAnimation = useEditor((s) => s.addAnimation)
   const addText = useEditor((s) => s.addText)
   const patchPitch = useEditor((s) => s.patchPitch)
+  const converting = useEditor((s) => s.conversion) !== null
   const pitch = project?.droneProfile.launchPitchM ?? 4
   const select = useEditor((s) => s.select)
   const removeAsset = useEditor((s) => s.removeAsset)
@@ -105,6 +106,7 @@ export function LeftPanel() {
   }, [project?.assets, query])
 
   const importFile = (file: File) => {
+    if (converting) return
     void readAssetFile(file)
       .then(({ name, kind, content }) => importAsset(name, content, kind))
       .catch((err) => useEditor.setState({ error: err instanceof Error ? err.message : 'Import failed' }))
@@ -189,7 +191,7 @@ export function LeftPanel() {
             }}
           />
           <QuietBtn
-            disabled={!text.trim() || compiling}
+            disabled={!text.trim() || compiling || converting}
             onClick={() => {
               void addText(text)
               setText('')
@@ -200,7 +202,13 @@ export function LeftPanel() {
         </div>
         <div className="mt-1 grid grid-cols-2">
           {PRIMS.map((p) => (
-            <QuietBtn key={p.id} disabled={compiling} onClick={() => void importAsset(p.label, p.svg, 'svg')}>
+            <QuietBtn
+              key={p.id}
+              // Starting a second conversion would discard the one on screen
+              // without saying so.
+              disabled={compiling || converting}
+              onClick={() => void importAsset(p.label, p.svg, 'svg')}
+            >
               {p.label}
             </QuietBtn>
           ))}
@@ -230,7 +238,7 @@ export function LeftPanel() {
         {assets.length === 0 ? (
           <div className="px-1 py-1 text-[12px] text-faint">
             DROP A FORMATION
-            <div>SVG · PNG · GLB · STL</div>
+            <div>SVG · GLB · OBJ · STL</div>
           </div>
         ) : (
           <ul className="ui-scroll max-h-[40vh] overflow-auto">
